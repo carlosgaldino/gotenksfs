@@ -33,14 +33,40 @@ impl Superblock {
     }
 
     pub fn checksum(&mut self) {
-        self.checksum = self.calculate_checksum();
+        self.checksum = calculate_checksum(&self);
     }
+}
 
-    fn calculate_checksum(&self) -> u32 {
-        let mut hasher = crc32fast::Hasher::new();
-        hasher.update(&bincode::serialize(self).unwrap());
-        hasher.finalize()
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub(crate) struct Inode {
+    pub mode: libc::mode_t,
+    pub hard_links: u64,
+    pub user_id: libc::uid_t,
+    pub group_id: libc::gid_t,
+    pub block_count: u64, // should be in 512 bytes blocks
+    pub size: u64,
+    pub created_at: u64,
+    pub accessed_at: Option<u64>,
+    pub modified_at: Option<u64>,
+    pub changed_at: Option<u64>,
+    pub direct_blocks: [u32; 12],
+    pub checksum: u32,
+}
+
+impl Inode {
+    #[allow(dead_code)]
+    pub fn checksum(&mut self) {
+        self.checksum = calculate_checksum(&self);
     }
+}
+
+fn calculate_checksum<S>(s: &S) -> u32
+where
+    S: serde::Serialize,
+{
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&bincode::serialize(&s).unwrap());
+    hasher.finalize()
 }
 
 #[cfg(test)]
@@ -48,14 +74,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new() {
+    fn superblock_new() {
         let sb = Superblock::new(1024, 3);
         assert_eq!(sb.free_inodes, 8192 * 3);
         assert_eq!(sb.free_blocks, 8192 * 3);
     }
 
     #[test]
-    fn test_checksum() {
+    fn superblock_checksum() {
         let mut sb = Superblock::new(1024, 3);
         sb.checksum();
 
@@ -63,8 +89,9 @@ mod tests {
 
         let checksum = sb.checksum;
         let mut sb = Superblock::new(1024, 3);
+        sb.checksum();
 
-        assert_eq!(sb.calculate_checksum(), checksum);
+        assert_eq!(sb.checksum, checksum);
 
         sb.last_mounted_at = Some(
             SystemTime::now()
@@ -72,7 +99,34 @@ mod tests {
                 .unwrap()
                 .as_secs(),
         );
+        sb.checksum();
 
-        assert_ne!(sb.calculate_checksum(), checksum);
+        assert_ne!(sb.checksum, checksum);
+    }
+
+    #[test]
+    fn inode_checksum() {
+        let mut inode = Inode::default();
+        inode.block_count = 24;
+        inode.checksum();
+
+        assert_ne!(inode.checksum, 0);
+
+        let checksum = inode.checksum;
+        let mut inode = Inode::default();
+        inode.block_count = 24;
+        inode.checksum();
+
+        assert_eq!(inode.checksum, checksum);
+
+        inode.accessed_at = Some(
+            SystemTime::now()
+                .duration_since(time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        );
+        inode.checksum();
+
+        assert_ne!(inode.checksum, checksum);
     }
 }

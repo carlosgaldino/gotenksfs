@@ -5,8 +5,6 @@ use std::{
     path::Path,
 };
 
-const INODE_SIZE: u32 = 128;
-
 pub(crate) fn make<P>(path: P, file_size: u64, blk_size: u32) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
@@ -58,7 +56,8 @@ fn block_group_size(blk_size: u32) -> u64 {
 }
 
 fn inode_table_size(blk_size: u32) -> u32 {
-    blk_size * 8 * INODE_SIZE
+    let inode_size = bincode::serialized_size(&fs::Inode::default()).unwrap() as u32;
+    blk_size * 8 * inode_size.next_power_of_two()
 }
 
 fn data_table_size(blk_size: u32) -> u32 {

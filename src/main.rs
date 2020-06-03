@@ -4,6 +4,7 @@ extern crate bincode;
 extern crate byte_unit;
 extern crate clap;
 extern crate crc32fast;
+extern crate libc;
 extern crate serde;
 
 mod fs;
