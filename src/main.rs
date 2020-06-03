@@ -4,11 +4,14 @@ extern crate bincode;
 extern crate byte_unit;
 extern crate clap;
 extern crate crc32fast;
+extern crate fuse_rs;
 extern crate libc;
+extern crate nix;
 extern crate serde;
 
 mod fs;
 mod mkfs;
+mod mount;
 
 fn main() -> anyhow::Result<()> {
     let matches = clap::App::new(env!("CARGO_PKG_NAME"))
@@ -17,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         .subcommand(
             clap::App::new("mkfs")
                 .about("Create a new filesystem")
-                .arg("<file> 'Location of the file system'")
+                .arg("<file> 'Location of the new file system image'")
                 .arg(
                     clap::Arg::with_name("block-size")
                         .short('b')
@@ -34,6 +37,11 @@ fn main() -> anyhow::Result<()> {
                         .takes_value(true)
                         .about("Specify the total size of the filesystem. The final size might be bigger than the provided value in order to have space for the filesystem structures.").required(true),
                 ),
+        ).subcommand(
+            clap::App::new("mount")
+                .about("Mount a filesystem")
+                .arg("<image> 'Location of the file system image'")
+                .arg("<mountpoint> 'Mountpoint'")
         )
         .get_matches();
 
@@ -52,6 +60,13 @@ fn main() -> anyhow::Result<()> {
         };
 
         mkfs::make(file_name, file_size, blk_size)?;
+    }
+
+    if let Some(matches) = matches.subcommand_matches("mount") {
+        let image = matches.value_of("image").unwrap();
+        let mountpoint = matches.value_of("mountpoint").unwrap();
+
+        mount::mount(image, mountpoint)?;
     }
 
     Ok(())

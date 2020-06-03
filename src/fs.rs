@@ -3,13 +3,15 @@ use std::time::{self, SystemTime};
 
 const GOTENKS_MAGIC: u32 = 0x64627a;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 pub(crate) struct Superblock {
     pub magic: u32,
     pub block_size: u32,
     pub created_at: u64,
     pub modified_at: Option<u64>,
     pub last_mounted_at: Option<u64>,
+    pub block_count: u32,
+    pub inode_count: u32,
     pub free_blocks: u32,
     pub free_inodes: u32,
     pub checksum: u32,
@@ -17,23 +19,32 @@ pub(crate) struct Superblock {
 
 impl Superblock {
     pub fn new(block_size: u32, groups: u64) -> Self {
+        let total_blocks = block_size * 8 * groups as u32;
         Self {
-            magic: GOTENKS_MAGIC,
             block_size,
+            magic: GOTENKS_MAGIC,
             created_at: SystemTime::now()
                 .duration_since(time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
             modified_at: None,
             last_mounted_at: None,
-            free_blocks: block_size * 8 * groups as u32,
-            free_inodes: block_size * 8 * groups as u32,
+            free_blocks: total_blocks,
+            free_inodes: total_blocks,
+            block_count: total_blocks,
+            inode_count: total_blocks,
             checksum: 0,
         }
     }
 
     pub fn checksum(&mut self) {
         self.checksum = calculate_checksum(&self);
+    }
+
+    pub fn verify_checksum(&mut self) -> bool {
+        let checksum = self.checksum;
+        self.checksum = 0;
+        checksum == calculate_checksum(&self)
     }
 }
 
