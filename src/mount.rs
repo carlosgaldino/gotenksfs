@@ -2,6 +2,7 @@ use crate::fs;
 use nix::errno::Errno;
 use std::{
     ffi::OsString,
+    fs as std_fs, io,
     path::{Path, PathBuf},
 };
 
@@ -14,8 +15,8 @@ pub(crate) fn mount<P>(image_path: P, mountpoint: P) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
 {
-    let file = std::fs::File::open(image_path.as_ref())?;
-    let buf = std::io::BufReader::new(file);
+    let file = std_fs::File::open(image_path.as_ref())?;
+    let buf = io::BufReader::new(file);
     let mut sb: fs::Superblock = bincode::deserialize_from(buf)?;
 
     if !sb.verify_checksum() {
@@ -102,5 +103,24 @@ impl fuse_rs::Filesystem for GotenksFS {
         };
 
         Ok(())
+    }
+
+    fn destroy(&mut self) -> fuse_rs::Result<()> {
+        let writer = match std_fs::OpenOptions::new()
+            .write(true)
+            .open(self.image.as_ref().unwrap())
+        {
+            Ok(f) => f,
+            Err(err) => {
+                return Err(err
+                    .raw_os_error()
+                    .map_or_else(|| Errno::EINVAL, |e| Errno::from_i32(e)))
+            }
+        };
+        self.sb.as_mut().unwrap().checksum();
+        match bincode::serialize_into(writer, self.sb.as_ref().unwrap()) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(Errno::EIO),
+        }
     }
 }
