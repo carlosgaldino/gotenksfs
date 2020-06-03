@@ -60,8 +60,14 @@ impl fuse_rs::Filesystem for GotenksFS {
         let mut stat = fuse_rs::fs::FileStat::new();
         match path.to_str().expect("path") {
             "/" => {
+                let sb = self.sb.as_ref().unwrap();
+                let now = fs::now();
                 stat.st_mode = nix::sys::stat::SFlag::S_IFDIR.bits() | 0o777;
                 stat.st_nlink = 3;
+                stat.st_ino = 1;
+                stat.st_atime = now as _;
+                stat.st_mtime = now as _;
+                stat.st_birthtime = sb.created_at as _;
             }
             _ => return Err(Errno::ENOENT),
         }
@@ -87,5 +93,14 @@ impl fuse_rs::Filesystem for GotenksFS {
         } else {
             Err(Errno::ENOENT)
         }
+    }
+
+    fn init(&mut self, _connection_info: &mut fuse_rs::fs::ConnectionInfo) -> fuse_rs::Result<()> {
+        if let Some(sb) = self.sb.as_mut() {
+            sb.update_last_mounted_at();
+            sb.update_modified_at();
+        };
+
+        Ok(())
     }
 }

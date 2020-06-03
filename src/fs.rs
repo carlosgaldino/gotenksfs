@@ -23,10 +23,7 @@ impl Superblock {
         Self {
             block_size,
             magic: GOTENKS_MAGIC,
-            created_at: SystemTime::now()
-                .duration_since(time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: now(),
             modified_at: None,
             last_mounted_at: None,
             free_blocks: total_blocks,
@@ -38,6 +35,7 @@ impl Superblock {
     }
 
     pub fn checksum(&mut self) {
+        self.checksum = 0;
         self.checksum = calculate_checksum(&self);
     }
 
@@ -45,6 +43,14 @@ impl Superblock {
         let checksum = self.checksum;
         self.checksum = 0;
         checksum == calculate_checksum(&self)
+    }
+
+    pub fn update_last_mounted_at(&mut self) {
+        self.last_mounted_at = Some(now());
+    }
+
+    pub fn update_modified_at(&mut self) {
+        self.modified_at = Some(now());
     }
 }
 
@@ -67,6 +73,7 @@ pub(crate) struct Inode {
 impl Inode {
     #[allow(dead_code)]
     pub fn checksum(&mut self) {
+        self.checksum = 0;
         self.checksum = calculate_checksum(&self);
     }
 }
@@ -78,6 +85,13 @@ where
     let mut hasher = crc32fast::Hasher::new();
     hasher.update(&bincode::serialize(&s).unwrap());
     hasher.finalize()
+}
+
+pub fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[cfg(test)]
