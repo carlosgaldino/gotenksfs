@@ -55,12 +55,12 @@ fn main() -> anyhow::Result<()> {
         let file_name = matches.value_of("file").unwrap();
         let file_size = matches.value_of("size").unwrap();
 
-        let file_size: u64 = match byte_unit::Byte::from_str(file_size) {
+        let file_size = match byte_unit::Byte::from_str(file_size) {
             Ok(size) => size.get_bytes(),
             Err(err) => return Err(anyhow!(err)),
         };
 
-        mkfs::make(file_name, file_size, blk_size)?;
+        mkfs::make(file_name, file_size as u32, blk_size)?;
     }
 
     if let Some(matches) = matches.subcommand_matches("mount") {

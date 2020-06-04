@@ -28,12 +28,16 @@ where
     }
 
     let groups = load_bitmaps(&sb, file)?;
+    let mut fs = GotenksFS {
+        sb: Some(sb),
+        image: Some(PathBuf::from(image_path.as_ref())),
+        groups: Some(groups),
+    };
+
+    fs.create_root()?;
+
     unsafe {
-        FS = GotenksFS {
-            sb: Some(sb),
-            image: Some(PathBuf::from(image_path.as_ref())),
-            groups: Some(groups),
-        };
+        FS = fs;
     }
 
     let opts = vec![
@@ -62,11 +66,92 @@ struct Group {
     inode_bitmap: BitVec<Lsb0, u8>,
 }
 
+impl Group {
+    fn has_inode(&self, i: usize) -> bool {
+        let b = self.inode_bitmap.get(i - 1).unwrap_or(&false);
+        b == &true
+    }
+
+    fn add_inode(&mut self, i: usize) {
+        self.inode_bitmap.set(i - 1, true);
+    }
+}
+
 #[derive(Debug, Default)]
 struct GotenksFS {
     sb: Option<fs::Superblock>,
     image: Option<PathBuf>,
     groups: Option<Vec<Group>>,
+}
+
+impl GotenksFS {
+    fn create_root(&mut self) -> anyhow::Result<()> {
+        let group = self.groups.as_mut().unwrap().get_mut(0).unwrap();
+        if group.has_inode(fs::ROOT_INODE as _) {
+            return Ok(());
+        }
+
+        let mut inode = fs::Inode::default();
+        inode.mode = SFlag::S_IFDIR.bits() | 0o777;
+        inode.hard_links = 2;
+        inode.created_at = fs::now();
+
+        group.add_inode(fs::ROOT_INODE as usize);
+        self.save_inode(inode, fs::ROOT_INODE)
+    }
+
+    fn save_inode(&mut self, inode: fs::Inode, index: u32) -> anyhow::Result<()> {
+        let file = std_fs::OpenOptions::new()
+            .write(true)
+            .open(self.image.as_ref().unwrap())?;
+        let mut writer = io::BufWriter::new(file);
+        writer.seek(SeekFrom::Start(self.inode_seek_position(index)))?;
+
+        writer.write_all(&inode.serialize()?)?;
+
+        Ok(writer.flush()?)
+    }
+
+    fn find_inode(&self, index: u32) -> fuse_rs::Result<fs::Inode> {
+        let (group_index, bitmap_index) = self.inode_offsets(index);
+        if !self
+            .groups
+            .as_ref()
+            .unwrap()
+            .get(group_index as usize)
+            .unwrap()
+            .has_inode(bitmap_index as usize)
+        {
+            return Err(Errno::ENOENT);
+        }
+
+        let file = std_fs::File::open(self.image.as_ref().unwrap()).map_err(|_e| Errno::EIO)?;
+        let mut reader = io::BufReader::new(file);
+        reader
+            .seek(SeekFrom::Start(self.inode_seek_position(index)))
+            .map_err(|_e| Errno::EIO)?;
+
+        let inode: fs::Inode = bincode::deserialize_from(reader).map_err(|_e| Errno::EIO)?;
+        Ok(inode)
+    }
+
+    // (block_group_index, bitmap_index)
+    fn inode_offsets(&self, index: u32) -> (u32, u32) {
+        let inodes_per_group = self.sb.as_ref().unwrap().data_blocks_per_group;
+        let inode_bg = (index - 1) / inodes_per_group;
+        (inode_bg, index & (inodes_per_group - 1))
+    }
+
+    fn inode_seek_position(&self, index: u32) -> u64 {
+        let (group_index, bitmap_index) = self.inode_offsets(index);
+        let block_size = self.sb.as_ref().unwrap().block_size;
+        let seek_pos = group_index * fs::block_group_size(block_size)
+            + block_size
+            + bitmap_index * fs::inode_size()
+            + fs::SUPERBLOCK_SIZE as u32;
+
+        seek_pos as u64
+    }
 }
 
 fn load_bitmaps(sb: &fs::Superblock, f: File) -> anyhow::Result<Vec<Group>> {
@@ -80,7 +165,7 @@ fn load_bitmaps(sb: &fs::Superblock, f: File) -> anyhow::Result<Vec<Group>> {
     for i in 0..sb.groups {
         if i > 0 {
             reader.seek(SeekFrom::Current(
-                (fs::block_group_size(sb.block_size) - 2 * sb.block_size as u64) as _, // minus the bitmaps
+                (fs::block_group_size(sb.block_size) - 2 * sb.block_size) as _, // minus the bitmaps
             ))?;
         }
 
@@ -97,19 +182,32 @@ fn load_bitmaps(sb: &fs::Superblock, f: File) -> anyhow::Result<Vec<Group>> {
     Ok(groups)
 }
 
+fn save_bitmaps<W>(groups: &[Group], blk_size: u32, w: &mut W) -> anyhow::Result<()>
+where
+    W: io::Write + io::Seek,
+{
+    for (i, g) in groups.iter().enumerate() {
+        let offset = fs::block_group_size(blk_size) as u64 * i as u64 + fs::SUPERBLOCK_SIZE;
+        w.seek(SeekFrom::Start(offset))?;
+        w.write_all(g.data_bitmap.as_slice())?;
+        w.write_all(g.inode_bitmap.as_slice())?;
+    }
+
+    Ok(w.flush()?)
+}
+
 impl fuse_rs::Filesystem for GotenksFS {
     fn metadata(&self, path: &Path) -> fuse_rs::Result<fuse_rs::fs::FileStat> {
         let mut stat = fuse_rs::fs::FileStat::new();
         match path.to_str().expect("path") {
             "/" => {
-                let sb = self.sb.as_ref().unwrap();
-                let now = fs::now();
-                stat.st_mode = SFlag::S_IFDIR.bits() | 0o777;
-                stat.st_nlink = 2;
-                stat.st_ino = 1;
-                stat.st_atime = now as _;
-                stat.st_mtime = sb.modified_at.unwrap() as _;
-                stat.st_birthtime = sb.created_at as _;
+                let inode = self.find_inode(fs::ROOT_INODE)?;
+                stat.st_ino = fs::ROOT_INODE as _;
+                stat.st_mode = inode.mode;
+                stat.st_nlink = inode.hard_links;
+                stat.st_atime = inode.accessed_at.unwrap_or(0);
+                stat.st_mtime = inode.modified_at.unwrap_or(0);
+                stat.st_birthtime = inode.created_at as _;
             }
             _ => return Err(Errno::ENOENT),
         }
@@ -147,21 +245,21 @@ impl fuse_rs::Filesystem for GotenksFS {
     }
 
     fn destroy(&mut self) -> fuse_rs::Result<()> {
-        let writer = match std_fs::OpenOptions::new()
+        let file = std_fs::OpenOptions::new()
             .write(true)
             .open(self.image.as_ref().unwrap())
-        {
-            Ok(f) => f,
-            Err(err) => {
-                return Err(err
-                    .raw_os_error()
-                    .map_or_else(|| Errno::EINVAL, |e| Errno::from_i32(e)))
-            }
-        };
+            .or_else(|e| {
+                e.raw_os_error()
+                    .map_or_else(|| Err(Errno::EINVAL), |e| Err(Errno::from_i32(e)))
+            })?;
+        let mut writer = io::BufWriter::new(file);
         self.sb.as_mut().unwrap().checksum();
-        match bincode::serialize_into(writer, self.sb.as_ref().unwrap()) {
-            Ok(_) => Ok(()),
-            Err(_) => Err(Errno::EIO),
-        }
+        save_bitmaps(
+            self.groups.as_ref().unwrap(),
+            self.sb.as_ref().unwrap().block_size,
+            &mut writer,
+        )
+        .or_else(|_| Err(Errno::EIO))?;
+        bincode::serialize_into(writer, self.sb.as_ref().unwrap()).or_else(|_| Err(Errno::EIO))
     }
 }

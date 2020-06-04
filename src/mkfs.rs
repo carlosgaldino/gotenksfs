@@ -5,15 +5,15 @@ use std::{
     path::Path,
 };
 
-pub(crate) fn make<P>(path: P, file_size: u64, blk_size: u32) -> anyhow::Result<()>
+pub(crate) fn make<P>(path: P, file_size: u32, blk_size: u32) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
 {
     let bg_size = fs::block_group_size(blk_size);
-    if file_size < bg_size - 2 * blk_size as u64 {
+    if file_size < bg_size - 2 * blk_size {
         return Err(anyhow!(format!(
             "File size must be at least {} for block size of {}",
-            byte_unit::Byte::from_bytes(bg_size).get_appropriate_unit(true),
+            byte_unit::Byte::from_bytes(bg_size as _).get_appropriate_unit(true),
             byte_unit::Byte::from_bytes(blk_size as _).get_adjusted_unit(byte_unit::ByteUnit::B)
         )));
     }
@@ -35,7 +35,7 @@ where
     buf.flush()?;
 
     let file = std_fs::OpenOptions::new().write(true).open(path)?;
-    Ok(file.set_len(1024 + bg_size * groups)?)
+    Ok(file.set_len(1024 + bg_size as u64 * groups as u64)?)
 }
 
 fn create_file<P: AsRef<Path>>(name: P) -> anyhow::Result<std_fs::File> {
