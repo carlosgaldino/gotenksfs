@@ -15,3 +15,4 @@ crc32fast = "1.2.0"
 libc      = "0.2.71"
 fuse-rs   = { path = "../fuse-rs", default-features = false, features = ["getattr", "statfs", "init", "destroy"] }
 nix       = "0.17.0"
+bitvec    = "0.17.4"

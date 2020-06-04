@@ -1,14 +1,18 @@
 use crate::fs;
-use nix::errno::Errno;
+use bitvec::prelude::*;
+use nix::{errno::Errno, sys::stat::SFlag};
 use std::{
     ffi::OsString,
-    fs as std_fs, io,
+    fs as std_fs,
+    io::{self, prelude::*, SeekFrom},
     path::{Path, PathBuf},
 };
+use std_fs::File;
 
 static mut FS: GotenksFS = GotenksFS {
     sb: None,
     image: None,
+    groups: None,
 };
 
 pub(crate) fn mount<P>(image_path: P, mountpoint: P) -> anyhow::Result<()>
@@ -16,17 +20,19 @@ where
     P: AsRef<Path>,
 {
     let file = std_fs::File::open(image_path.as_ref())?;
-    let buf = io::BufReader::new(file);
-    let mut sb: fs::Superblock = bincode::deserialize_from(buf)?;
+    let reader = io::BufReader::new(&file);
+    let mut sb: fs::Superblock = bincode::deserialize_from(reader)?;
 
     if !sb.verify_checksum() {
         return Err(anyhow!("Superblock checksum verification failed"));
     }
 
+    let groups = load_bitmaps(&sb, file)?;
     unsafe {
         FS = GotenksFS {
             sb: Some(sb),
             image: Some(PathBuf::from(image_path.as_ref())),
+            groups: Some(groups),
         };
     }
 
@@ -50,10 +56,45 @@ where
     }
 }
 
+#[derive(Debug)]
+struct Group {
+    data_bitmap: BitVec<Lsb0, u8>,
+    inode_bitmap: BitVec<Lsb0, u8>,
+}
+
 #[derive(Debug, Default)]
 struct GotenksFS {
     sb: Option<fs::Superblock>,
     image: Option<PathBuf>,
+    groups: Option<Vec<Group>>,
+}
+
+fn load_bitmaps(sb: &fs::Superblock, f: File) -> anyhow::Result<Vec<Group>> {
+    let mut groups = Vec::with_capacity(sb.groups as _);
+    let mut reader = io::BufReader::new(f);
+    reader.seek(SeekFrom::Start(fs::SUPERBLOCK_SIZE))?;
+    let mut buf = Vec::with_capacity(sb.block_size as usize);
+    unsafe {
+        buf.set_len(sb.block_size as _);
+    }
+    for i in 0..sb.groups {
+        if i > 0 {
+            reader.seek(SeekFrom::Current(
+                (fs::block_group_size(sb.block_size) - 2 * sb.block_size as u64) as _, // minus the bitmaps
+            ))?;
+        }
+
+        reader.read_exact(&mut buf)?;
+        let data_bitmap = BitVec::<Lsb0, u8>::from_slice(&mut buf);
+        reader.read_exact(&mut buf)?;
+        let inode_bitmap = BitVec::<Lsb0, u8>::from_slice(&mut buf);
+        groups.push(Group {
+            data_bitmap,
+            inode_bitmap,
+        });
+    }
+
+    Ok(groups)
 }
 
 impl fuse_rs::Filesystem for GotenksFS {
@@ -63,11 +104,11 @@ impl fuse_rs::Filesystem for GotenksFS {
             "/" => {
                 let sb = self.sb.as_ref().unwrap();
                 let now = fs::now();
-                stat.st_mode = nix::sys::stat::SFlag::S_IFDIR.bits() | 0o777;
-                stat.st_nlink = 3;
+                stat.st_mode = SFlag::S_IFDIR.bits() | 0o777;
+                stat.st_nlink = 2;
                 stat.st_ino = 1;
                 stat.st_atime = now as _;
-                stat.st_mtime = now as _;
+                stat.st_mtime = sb.modified_at.unwrap() as _;
                 stat.st_birthtime = sb.created_at as _;
             }
             _ => return Err(Errno::ENOENT),

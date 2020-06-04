@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate anyhow;
 extern crate bincode;
+extern crate bitvec;
 extern crate byte_unit;
 extern crate clap;
 extern crate crc32fast;

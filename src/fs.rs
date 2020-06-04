@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{self, SystemTime};
 
 const GOTENKS_MAGIC: u32 = 0x64627a;
+pub const SUPERBLOCK_SIZE: u64 = 1024;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub(crate) struct Superblock {
@@ -14,14 +15,17 @@ pub(crate) struct Superblock {
     pub inode_count: u32,
     pub free_blocks: u32,
     pub free_inodes: u32,
+    pub groups: u32,
+    pub blocks_per_group: u32,
     pub checksum: u32,
 }
 
 impl Superblock {
-    pub fn new(block_size: u32, groups: u64) -> Self {
-        let total_blocks = block_size * 8 * groups as u32;
+    pub fn new(block_size: u32, groups: u32) -> Self {
+        let total_blocks = block_size * 8 * groups;
         Self {
             block_size,
+            groups,
             magic: GOTENKS_MAGIC,
             created_at: now(),
             modified_at: None,
@@ -30,6 +34,7 @@ impl Superblock {
             free_inodes: total_blocks,
             block_count: total_blocks,
             inode_count: total_blocks,
+            blocks_per_group: block_size * 8,
             checksum: 0,
         }
     }
@@ -87,11 +92,28 @@ where
     hasher.finalize()
 }
 
-pub fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+pub(crate) fn block_group_size(blk_size: u32) -> u64 {
+    let x = blk_size + // data bitmap
+        blk_size + // inode bitmap
+        inode_table_size(blk_size) +
+        data_table_size(blk_size);
+    x as u64
+}
+
+pub(crate) fn inode_table_size(blk_size: u32) -> u32 {
+    let inode_size = bincode::serialized_size(&Inode::default()).unwrap() as u32;
+    blk_size * 8 * inode_size.next_power_of_two()
+}
+
+pub(crate) fn data_table_size(blk_size: u32) -> u32 {
+    blk_size * blk_size * 8
 }
 
 #[cfg(test)]
