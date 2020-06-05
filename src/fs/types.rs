@@ -1,12 +1,9 @@
+use super::{util, GOTENKS_MAGIC};
+use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::time::{self, SystemTime};
-
-const GOTENKS_MAGIC: u32 = 0x64627a;
-pub const SUPERBLOCK_SIZE: u64 = 1024;
-pub const ROOT_INODE: u32 = 1;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
-pub(crate) struct Superblock {
+pub struct Superblock {
     pub magic: u32,
     pub block_size: u32,
     pub created_at: u64,
@@ -28,7 +25,7 @@ impl Superblock {
             block_size,
             groups,
             magic: GOTENKS_MAGIC,
-            created_at: now(),
+            created_at: util::now(),
             modified_at: None,
             last_mounted_at: None,
             free_blocks: total_blocks,
@@ -42,26 +39,47 @@ impl Superblock {
 
     pub fn checksum(&mut self) {
         self.checksum = 0;
-        self.checksum = calculate_checksum(&self);
+        self.checksum = util::calculate_checksum(&self);
     }
 
     pub fn verify_checksum(&mut self) -> bool {
         let checksum = self.checksum;
         self.checksum = 0;
-        checksum == calculate_checksum(&self)
+        checksum == util::calculate_checksum(&self)
     }
 
     pub fn update_last_mounted_at(&mut self) {
-        self.last_mounted_at = Some(now());
+        self.last_mounted_at = Some(util::now());
     }
 
     pub fn update_modified_at(&mut self) {
-        self.modified_at = Some(now());
+        self.modified_at = Some(util::now());
+    }
+}
+
+#[derive(Debug)]
+pub struct Group {
+    pub data_bitmap: BitVec<Lsb0, u8>,
+    pub inode_bitmap: BitVec<Lsb0, u8>,
+}
+
+impl Group {
+    pub fn has_inode(&self, i: usize) -> bool {
+        let mut x = i;
+        if x > 0 {
+            x -= 1;
+        }
+        let b = self.inode_bitmap.get(x).unwrap_or(&false);
+        b == &true
+    }
+
+    pub fn add_inode(&mut self, i: usize) {
+        self.inode_bitmap.set(i - 1, true);
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
-pub(crate) struct Inode {
+pub struct Inode {
     pub mode: libc::mode_t,
     pub hard_links: u16,
     pub user_id: libc::uid_t,
@@ -84,44 +102,8 @@ impl Inode {
     #[allow(dead_code)]
     pub fn checksum(&mut self) {
         self.checksum = 0;
-        self.checksum = calculate_checksum(&self);
+        self.checksum = util::calculate_checksum(&self);
     }
-}
-
-fn calculate_checksum<S>(s: &S) -> u32
-where
-    S: serde::Serialize,
-{
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(&bincode::serialize(&s).unwrap());
-    hasher.finalize()
-}
-
-pub(crate) fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-pub(crate) fn block_group_size(blk_size: u32) -> u32 {
-    blk_size + // data bitmap
-        blk_size + // inode bitmap
-        inode_table_size(blk_size) +
-        data_table_size(blk_size)
-}
-
-pub(crate) fn inode_table_size(blk_size: u32) -> u32 {
-    blk_size * 8 * inode_size()
-}
-
-pub(crate) fn data_table_size(blk_size: u32) -> u32 {
-    blk_size * blk_size * 8
-}
-
-pub(crate) fn inode_size() -> u32 {
-    let serialized_size = bincode::serialized_size(&Inode::default()).unwrap();
-    serialized_size.next_power_of_two() as u32
 }
 
 #[cfg(test)]
