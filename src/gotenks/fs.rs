@@ -18,7 +18,7 @@ pub struct GotenksFS {
 
 impl GotenksFS {
     pub fn create_root(&mut self) -> anyhow::Result<()> {
-        let group = self.groups.as_mut().unwrap().get_mut(0).unwrap();
+        let group = self.groups_mut().get_mut(0).unwrap();
         if group.has_inode(ROOT_INODE as _) {
             return Ok(());
         }
@@ -46,9 +46,7 @@ impl GotenksFS {
     fn find_inode(&self, index: u32) -> fuse_rs::Result<Inode> {
         let (group_index, bitmap_index) = self.inode_offsets(index);
         if !self
-            .groups
-            .as_ref()
-            .unwrap()
+            .groups()
             .get(group_index as usize)
             .unwrap()
             .has_inode(bitmap_index as usize)
@@ -68,20 +66,36 @@ impl GotenksFS {
 
     // (block_group_index, bitmap_index)
     fn inode_offsets(&self, index: u32) -> (u32, u32) {
-        let inodes_per_group = self.sb.as_ref().unwrap().data_blocks_per_group;
+        let inodes_per_group = self.superblock().data_blocks_per_group;
         let inode_bg = (index - 1) / inodes_per_group;
         (inode_bg, index - 1 & (inodes_per_group - 1))
     }
 
     fn inode_seek_position(&self, index: u32) -> u64 {
         let (group_index, bitmap_index) = self.inode_offsets(index);
-        let block_size = self.sb.as_ref().unwrap().block_size;
+        let block_size = self.superblock().block_size;
         let seek_pos = group_index * util::block_group_size(block_size)
             + 2 * block_size
             + bitmap_index * INODE_SIZE as u32
             + SUPERBLOCK_SIZE as u32;
 
         seek_pos as u64
+    }
+
+    fn groups(&self) -> &[Group] {
+        self.groups.as_ref().unwrap()
+    }
+
+    fn groups_mut(&mut self) -> &mut [Group] {
+        self.groups.as_mut().unwrap()
+    }
+
+    fn superblock(&self) -> &Superblock {
+        self.sb.as_ref().unwrap()
+    }
+
+    fn superblock_mut(&mut self) -> &mut Superblock {
+        self.sb.as_mut().unwrap()
     }
 }
 
@@ -105,7 +119,7 @@ impl fuse_rs::Filesystem for GotenksFS {
 
     fn statfs(&self, path: &Path) -> fuse_rs::Result<libc::statvfs> {
         if path == Path::new("/") {
-            let sb = self.sb.as_ref().unwrap();
+            let sb = self.superblock();
             let stat = libc::statvfs {
                 f_bsize: sb.block_size as u64,
                 f_frsize: sb.block_size as u64,
@@ -127,10 +141,9 @@ impl fuse_rs::Filesystem for GotenksFS {
     }
 
     fn init(&mut self, _connection_info: &mut fuse_rs::fs::ConnectionInfo) -> fuse_rs::Result<()> {
-        if let Some(sb) = self.sb.as_mut() {
-            sb.update_last_mounted_at();
-            sb.update_modified_at();
-        };
+        let sb = self.superblock_mut();
+        sb.update_last_mounted_at();
+        sb.update_modified_at();
 
         Ok(())
     }
@@ -145,13 +158,10 @@ impl fuse_rs::Filesystem for GotenksFS {
             })?;
         let mut writer = io::BufWriter::new(file);
 
-        self.sb
-            .as_mut()
-            .unwrap()
+        self.superblock_mut()
             .serialize_into(&mut writer)
             .or_else(|_| Err(Errno::EIO))?;
 
-        Group::serialize_into(&mut writer, self.groups.as_ref().unwrap())
-            .or_else(|_| Err(Errno::EIO))
+        Group::serialize_into(&mut writer, self.groups()).or_else(|_| Err(Errno::EIO))
     }
 }
