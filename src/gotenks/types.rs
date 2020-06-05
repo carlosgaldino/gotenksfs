@@ -1,4 +1,5 @@
 use super::{util, GOTENKS_MAGIC, SUPERBLOCK_SIZE};
+use anyhow::anyhow;
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -63,18 +64,13 @@ impl Superblock {
         bincode::serialize_into(w, self).map_err(|e| e.into())
     }
 
-    pub fn verify_checksum(&mut self) -> bool {
-        let checksum = self.checksum;
-        self.checksum = 0;
-        checksum == util::calculate_checksum(&self)
-    }
+    pub fn deserialize_from<R: std::io::Read>(r: R) -> anyhow::Result<Self> {
+        let mut sb: Self = bincode::deserialize_from(r)?;
+        if !sb.verify_checksum() {
+            return Err(anyhow!("Superblock checksum verification failed"));
+        }
 
-    pub fn update_last_mounted_at(&mut self) {
-        self.last_mounted_at = Some(util::now());
-    }
-
-    pub fn update_modified_at(&mut self) {
-        self.modified_at = Some(util::now());
+        Ok(sb)
     }
 
     fn checksum(&mut self) {
