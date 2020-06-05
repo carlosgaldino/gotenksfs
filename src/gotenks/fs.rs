@@ -1,6 +1,6 @@
 use super::{
     types::{Group, Inode, Superblock},
-    util, ROOT_INODE, SUPERBLOCK_SIZE,
+    util, INODE_SIZE, ROOT_INODE, SUPERBLOCK_SIZE,
 };
 use bitvec::prelude::*;
 use nix::{errno::Errno, sys::stat::SFlag};
@@ -79,7 +79,7 @@ impl GotenksFS {
         let block_size = self.sb.as_ref().unwrap().block_size;
         let seek_pos = group_index * util::block_group_size(block_size)
             + 2 * block_size
-            + bitmap_index * Inode::size()
+            + bitmap_index * INODE_SIZE as u32
             + SUPERBLOCK_SIZE as u32;
 
         seek_pos as u64

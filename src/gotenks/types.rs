@@ -39,10 +39,6 @@ impl Superblock {
         }
     }
 
-    pub fn size() -> u64 {
-        SUPERBLOCK_SIZE
-    }
-
     pub fn update_last_mounted_at(&mut self) {
         self.last_mounted_at = Some(util::now());
     }
@@ -126,11 +122,6 @@ pub struct Inode {
 }
 
 impl Inode {
-    pub fn size() -> u32 {
-        let serialized_size = bincode::serialized_size(&Self::default()).unwrap();
-        serialized_size.next_power_of_two() as u32
-    }
-
     pub fn serialize(&mut self) -> anyhow::Result<Vec<u8>> {
         self.checksum();
         bincode::serialize(self).map_err(|e| e.into())

@@ -1,4 +1,4 @@
-use crate::gotenks::{types::Superblock, util};
+use crate::gotenks::{types::Superblock, util, SUPERBLOCK_SIZE};
 use anyhow::anyhow;
 use byte_unit::{Byte, ByteUnit};
 use std::{
@@ -26,10 +26,10 @@ where
     let mut sb = Superblock::new(blk_size, groups as _);
 
     let mut serialized_buf = sb.serialize()?;
-    serialized_buf.resize(Superblock::size() as _, 0u8);
+    serialized_buf.resize(SUPERBLOCK_SIZE as _, 0u8);
     buf.write_all(&serialized_buf)?;
 
     buf.flush()?;
 
-    Ok(file.set_len(Superblock::size() + bg_size as u64 * groups as u64)?)
+    Ok(file.set_len(SUPERBLOCK_SIZE + bg_size as u64 * groups as u64)?)
 }

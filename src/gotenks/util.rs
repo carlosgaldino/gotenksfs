@@ -1,4 +1,4 @@
-use super::types::Inode;
+use super::INODE_SIZE;
 use std::time::{self, SystemTime};
 
 pub fn calculate_checksum<S>(s: &S) -> u32
@@ -17,6 +17,7 @@ pub fn now() -> u64 {
         .as_secs()
 }
 
+#[inline(always)]
 pub fn block_group_size(blk_size: u32) -> u32 {
     blk_size + // data bitmap
         blk_size + // inode bitmap
@@ -24,10 +25,12 @@ pub fn block_group_size(blk_size: u32) -> u32 {
         data_table_size(blk_size)
 }
 
+#[inline(always)]
 pub fn inode_table_size(blk_size: u32) -> u32 {
-    blk_size * 8 * Inode::size()
+    blk_size * 8 * INODE_SIZE as u32
 }
 
+#[inline(always)]
 pub fn data_table_size(blk_size: u32) -> u32 {
     blk_size * blk_size * 8
 }
