@@ -1,14 +1,6 @@
-#[macro_use]
-extern crate anyhow;
-extern crate bincode;
-extern crate bitvec;
-extern crate byte_unit;
-extern crate clap;
-extern crate crc32fast;
-extern crate fuse_rs;
-extern crate libc;
-extern crate nix;
-extern crate serde;
+use anyhow::anyhow;
+use byte_unit::Byte;
+use clap;
 
 mod fs;
 mod mkfs;
@@ -55,7 +47,7 @@ fn main() -> anyhow::Result<()> {
         let file_name = matches.value_of("file").unwrap();
         let file_size = matches.value_of("size").unwrap();
 
-        let file_size = match byte_unit::Byte::from_str(file_size) {
+        let file_size = match Byte::from_str(file_size) {
             Ok(size) => size.get_bytes(),
             Err(err) => return Err(anyhow!(err)),
         };

@@ -1,9 +1,12 @@
 use crate::fs;
 
+use anyhow::anyhow;
 use fs::gotenks::GotenksFS;
+use io::BufReader;
 use std::{
     ffi::OsString,
-    fs as std_fs, io,
+    fs::File,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -17,8 +20,8 @@ pub fn mount<P>(image_path: P, mountpoint: P) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
 {
-    let file = std_fs::File::open(image_path.as_ref())?;
-    let reader = io::BufReader::new(&file);
+    let file = File::open(image_path.as_ref())?;
+    let reader = BufReader::new(&file);
     let mut sb: fs::types::Superblock = bincode::deserialize_from(reader)?;
 
     if !sb.verify_checksum() {

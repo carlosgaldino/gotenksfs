@@ -1,6 +1,8 @@
 use crate::fs;
+use anyhow::anyhow;
+use byte_unit::{Byte, ByteUnit};
 use std::{
-    fs as std_fs,
+    fs::{File, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
 };
@@ -13,8 +15,8 @@ where
     if file_size < bg_size - 2 * blk_size {
         return Err(anyhow!(format!(
             "File size must be at least {} for block size of {}",
-            byte_unit::Byte::from_bytes(bg_size as _).get_appropriate_unit(true),
-            byte_unit::Byte::from_bytes(blk_size as _).get_adjusted_unit(byte_unit::ByteUnit::B)
+            Byte::from_bytes(bg_size as _).get_appropriate_unit(true),
+            Byte::from_bytes(blk_size as _).get_adjusted_unit(ByteUnit::B)
         )));
     }
 
@@ -34,12 +36,12 @@ where
 
     buf.flush()?;
 
-    let file = std_fs::OpenOptions::new().write(true).open(path)?;
+    let file = OpenOptions::new().write(true).open(path)?;
     Ok(file.set_len(1024 + bg_size as u64 * groups as u64)?)
 }
 
-fn create_file<P: AsRef<Path>>(name: P) -> anyhow::Result<std_fs::File> {
-    let file = std_fs::OpenOptions::new()
+fn create_file<P: AsRef<Path>>(name: P) -> anyhow::Result<File> {
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)

@@ -1,4 +1,5 @@
 use super::{util, GOTENKS_MAGIC};
+use anyhow::anyhow;
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
 
