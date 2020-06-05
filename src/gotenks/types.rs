@@ -42,6 +42,14 @@ impl Superblock {
         SUPERBLOCK_SIZE
     }
 
+    pub fn update_last_mounted_at(&mut self) {
+        self.last_mounted_at = Some(util::now());
+    }
+
+    pub fn update_modified_at(&mut self) {
+        self.modified_at = Some(util::now());
+    }
+
     pub fn serialize(&mut self) -> anyhow::Result<Vec<u8>> {
         self.checksum();
         bincode::serialize(self).map_err(|e| e.into())
@@ -72,6 +80,12 @@ impl Superblock {
     fn checksum(&mut self) {
         self.checksum = 0;
         self.checksum = util::calculate_checksum(&self);
+    }
+
+    fn verify_checksum(&mut self) -> bool {
+        let checksum = self.checksum;
+        self.checksum = 0;
+        checksum == util::calculate_checksum(&self)
     }
 }
 
@@ -131,7 +145,6 @@ impl Inode {
         bincode::serialize_into(w, self).map_err(|e| e.into())
     }
 
-    #[allow(dead_code)]
     pub fn checksum(&mut self) {
         self.checksum = 0;
         self.checksum = util::calculate_checksum(&self);
@@ -141,12 +154,14 @@ impl Inode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{self, SystemTime};
 
     #[test]
     fn superblock_new() {
         let sb = Superblock::new(1024, 3);
         assert_eq!(sb.free_inodes, 8192 * 3);
         assert_eq!(sb.free_blocks, 8192 * 3);
+        assert_eq!(sb.data_blocks_per_group, 1024 * 8);
     }
 
     #[test]
@@ -192,7 +207,7 @@ mod tests {
             SystemTime::now()
                 .duration_since(time::UNIX_EPOCH)
                 .unwrap()
-                .as_secs(),
+                .as_secs() as _,
         );
         inode.checksum();
 
