@@ -85,20 +85,6 @@ impl GotenksFS {
     }
 }
 
-fn save_bitmaps<W>(groups: &[Group], blk_size: u32, w: &mut W) -> anyhow::Result<()>
-where
-    W: io::Write + io::Seek,
-{
-    for (i, g) in groups.iter().enumerate() {
-        let offset = util::block_group_size(blk_size) as u64 * i as u64 + SUPERBLOCK_SIZE;
-        w.seek(io::SeekFrom::Start(offset))?;
-        w.write_all(g.data_bitmap.as_slice())?;
-        w.write_all(g.inode_bitmap.as_slice())?;
-    }
-
-    Ok(w.flush()?)
-}
-
 impl fuse_rs::Filesystem for GotenksFS {
     fn metadata(&self, path: &Path) -> fuse_rs::Result<fuse_rs::fs::FileStat> {
         let mut stat = fuse_rs::fs::FileStat::new();
@@ -164,11 +150,8 @@ impl fuse_rs::Filesystem for GotenksFS {
             .unwrap()
             .serialize_into(&mut writer)
             .or_else(|_| Err(Errno::EIO))?;
-        save_bitmaps(
-            self.groups.as_ref().unwrap(),
-            self.sb.as_ref().unwrap().block_size,
-            &mut writer,
-        )
-        .or_else(|_| Err(Errno::EIO))
+
+        Group::serialize_into(&mut writer, self.groups.as_ref().unwrap())
+            .or_else(|_| Err(Errno::EIO))
     }
 }

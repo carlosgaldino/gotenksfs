@@ -94,6 +94,23 @@ pub struct Group {
 }
 
 impl Group {
+    pub fn serialize_into<W>(mut w: W, groups: &[Group]) -> anyhow::Result<()>
+    where
+        W: Write + Seek,
+    {
+        assert!(groups.len() > 0);
+        let blk_size = groups.first().unwrap().inode_bitmap.len() / 8;
+        for (i, g) in groups.iter().enumerate() {
+            let offset =
+                util::block_group_size(blk_size as u32) as u64 * i as u64 + SUPERBLOCK_SIZE;
+            w.seek(SeekFrom::Start(offset))?;
+            w.write_all(g.data_bitmap.as_slice())?;
+            w.write_all(g.inode_bitmap.as_slice())?;
+        }
+
+        Ok(w.flush()?)
+    }
+
     pub fn deserialize_from<R>(mut r: R, blk_size: u32, count: usize) -> anyhow::Result<Vec<Group>>
     where
         R: Read + Seek,
