@@ -63,7 +63,7 @@ impl GotenksFS {
             .seek(io::SeekFrom::Start(self.inode_seek_position(index)))
             .map_err(|_e| Errno::EIO)?;
 
-        let inode: Inode = bincode::deserialize_from(reader).map_err(|_e| Errno::EIO)?;
+        let inode = Inode::deserialize_from(reader).map_err(|_e| Errno::EIO)?;
         Ok(inode)
     }
 

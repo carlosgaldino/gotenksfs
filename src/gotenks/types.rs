@@ -81,7 +81,10 @@ impl Superblock {
     fn verify_checksum(&mut self) -> bool {
         let checksum = self.checksum;
         self.checksum = 0;
-        checksum == util::calculate_checksum(&self)
+        let ok = checksum == util::calculate_checksum(&self);
+        self.checksum = checksum;
+
+        ok
     }
 }
 
@@ -141,9 +144,27 @@ impl Inode {
         bincode::serialize_into(w, self).map_err(|e| e.into())
     }
 
-    pub fn checksum(&mut self) {
+    pub fn deserialize_from<R: std::io::Read>(r: R) -> anyhow::Result<Self> {
+        let mut inode: Self = bincode::deserialize_from(r)?;
+        if !inode.verify_checksum() {
+            return Err(anyhow!("Inode checksum verification failed"));
+        }
+
+        Ok(inode)
+    }
+
+    fn checksum(&mut self) {
         self.checksum = 0;
         self.checksum = util::calculate_checksum(&self);
+    }
+
+    fn verify_checksum(&mut self) -> bool {
+        let checksum = self.checksum;
+        self.checksum = 0;
+        let ok = checksum == util::calculate_checksum(&self);
+        self.checksum = checksum;
+
+        ok
     }
 }
 
@@ -161,52 +182,41 @@ mod tests {
     }
 
     #[test]
-    fn superblock_checksum() {
+    fn superblock_checksum() -> anyhow::Result<()> {
         let mut sb = Superblock::new(1024, 3);
-        sb.checksum();
+        let buf = <Superblock>::serialize(&mut sb)?;
+        let mut deserialised_sb = Superblock::deserialize_from(buf.as_slice())?;
+        assert_ne!(deserialised_sb.checksum, 0);
+        assert_eq!(deserialised_sb.checksum, sb.checksum);
 
-        assert_ne!(sb.checksum, 0);
+        deserialised_sb.update_last_mounted_at();
+        let buf = <Superblock>::serialize(&mut deserialised_sb)?;
+        let deserialised_sb = Superblock::deserialize_from(buf.as_slice())?;
 
-        let checksum = sb.checksum;
-        let mut sb = Superblock::new(1024, 3);
-        sb.checksum();
-
-        assert_eq!(sb.checksum, checksum);
-
-        sb.last_mounted_at = Some(
-            SystemTime::now()
-                .duration_since(time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        );
-        sb.checksum();
-
-        assert_ne!(sb.checksum, checksum);
+        assert_ne!(sb.checksum, deserialised_sb.checksum);
+        Ok(())
     }
 
     #[test]
-    fn inode_checksum() {
+    fn inode_checksum() -> anyhow::Result<()> {
         let mut inode = Inode::default();
         inode.block_count = 24;
-        inode.checksum();
+        let buf = <Inode>::serialize(&mut inode)?;
+        let mut deserialised_inode = Inode::deserialize_from(buf.as_slice())?;
+        assert_ne!(deserialised_inode.checksum, 0);
+        assert_eq!(deserialised_inode.checksum, inode.checksum);
 
-        assert_ne!(inode.checksum, 0);
-
-        let checksum = inode.checksum;
-        let mut inode = Inode::default();
-        inode.block_count = 24;
-        inode.checksum();
-
-        assert_eq!(inode.checksum, checksum);
-
-        inode.accessed_at = Some(
+        deserialised_inode.accessed_at = Some(
             SystemTime::now()
                 .duration_since(time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as _,
         );
-        inode.checksum();
+        let buf = <Inode>::serialize(&mut deserialised_inode)?;
+        let deserialised_inode = Inode::deserialize_from(buf.as_slice())?;
 
-        assert_ne!(inode.checksum, checksum);
+        assert_ne!(inode.checksum, deserialised_inode.checksum);
+
+        Ok(())
     }
 }
