@@ -87,7 +87,7 @@ impl Superblock {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Group {
     pub data_bitmap: BitVec<Lsb0, u8>,
     pub inode_bitmap: BitVec<Lsb0, u8>,
@@ -138,12 +138,7 @@ impl Group {
     }
 
     pub fn has_inode(&self, i: usize) -> bool {
-        let mut x = i;
-        if x > 0 {
-            x -= 1;
-        }
-        let b = self.inode_bitmap.get(x).unwrap_or(&false);
-        b == &true
+        self.inode_bitmap.get(i - 1).unwrap_or(&false) == &true
     }
 
     pub fn add_inode(&mut self, i: usize) {
@@ -168,6 +163,7 @@ pub struct Inode {
 }
 
 impl Inode {
+    #[allow(dead_code)]
     pub fn serialize(&mut self) -> anyhow::Result<Vec<u8>> {
         self.checksum();
         bincode::serialize(self).map_err(|e| e.into())
@@ -255,5 +251,24 @@ mod tests {
         assert_ne!(inode.checksum, deserialised_inode.checksum);
 
         Ok(())
+    }
+
+    #[test]
+    fn group_has_inode() {
+        let mut bitmap = BitVec::<Lsb0, u8>::with_capacity(1024);
+        bitmap.resize(1024, false);
+
+        let mut group = Group::default();
+        group.inode_bitmap = bitmap;
+
+        assert!(!group.has_inode(1));
+
+        group.add_inode(1);
+        assert!(group.has_inode(1));
+        assert!(group.inode_bitmap[0]);
+
+        group.add_inode(1024);
+        assert!(group.has_inode(1024));
+        assert!(group.inode_bitmap[1023]);
     }
 }

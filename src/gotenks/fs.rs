@@ -44,12 +44,12 @@ impl GotenksFS {
     }
 
     fn find_inode(&self, index: u32) -> fuse_rs::Result<Inode> {
-        let (group_index, bitmap_index) = self.inode_offsets(index);
+        let (group_index, _bitmap_index) = self.inode_offsets(index);
         if !self
             .groups()
             .get(group_index as usize)
             .unwrap()
-            .has_inode(bitmap_index as usize)
+            .has_inode(index as usize)
         {
             return Err(Errno::ENOENT);
         }
@@ -64,7 +64,7 @@ impl GotenksFS {
         Ok(inode)
     }
 
-    // (block_group_index, bitmap_index)
+    // (group_block_index, bitmap_index)
     fn inode_offsets(&self, index: u32) -> (u32, u32) {
         let inodes_per_group = self.superblock().data_blocks_per_group;
         let inode_bg = (index - 1) / inodes_per_group;
@@ -163,5 +163,50 @@ impl fuse_rs::Filesystem for GotenksFS {
             .or_else(|_| Err(Errno::EIO))?;
 
         Group::serialize_into(&mut writer, self.groups()).or_else(|_| Err(Errno::EIO))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GotenksFS;
+    use crate::gotenks::{types::Superblock, INODE_SIZE};
+
+    #[test]
+    fn inode_offsets() {
+        let mut fs = GotenksFS::default();
+        fs.sb = Some(Superblock::new(1024, 3));
+        fs.superblock_mut().data_blocks_per_group = 1024 * 8;
+
+        let (group_index, offset) = fs.inode_offsets(1);
+        assert_eq!(group_index, 0);
+        assert_eq!(offset, 0);
+
+        let (group_index, offset) = fs.inode_offsets(1024 * 8);
+        assert_eq!(group_index, 0);
+        assert_eq!(offset, 8191);
+
+        let (group_index, offset) = fs.inode_offsets(1024 * 8 - 1);
+        assert_eq!(group_index, 0);
+        assert_eq!(offset, 8190);
+
+        let (group_index, offset) = fs.inode_offsets(2 * 1024 * 8 - 1);
+        assert_eq!(group_index, 1);
+        assert_eq!(offset, 8190);
+    }
+
+    #[test]
+    fn inode_seek_position() {
+        let mut fs = GotenksFS::default();
+        fs.sb = Some(Superblock::new(1024, 3));
+        fs.superblock_mut().data_blocks_per_group = 1024 * 8;
+
+        let offset = fs.inode_seek_position(1);
+        assert_eq!(3072, offset);
+
+        let offset = fs.inode_seek_position(2);
+        assert_eq!(3072 + INODE_SIZE, offset);
+
+        let offset = fs.inode_seek_position(8192);
+        assert_eq!(3072 + 8191 * INODE_SIZE, offset); // superblock + data bitmap + inode bitmap + 8191 inodes
     }
 }
