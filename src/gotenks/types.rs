@@ -2,7 +2,7 @@ use super::{util, GOTENKS_MAGIC, SUPERBLOCK_SIZE};
 use anyhow::anyhow;
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{prelude::*, SeekFrom};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Superblock {
@@ -60,7 +60,10 @@ impl Superblock {
         bincode::serialize_into(w, self).map_err(|e| e.into())
     }
 
-    pub fn deserialize_from<R: std::io::Read>(r: R) -> anyhow::Result<Self> {
+    pub fn deserialize_from<R>(r: R) -> anyhow::Result<Self>
+    where
+        R: Read,
+    {
         let mut sb: Self = bincode::deserialize_from(r)?;
         if !sb.verify_checksum() {
             return Err(anyhow!("Superblock checksum verification failed"));
@@ -91,6 +94,32 @@ pub struct Group {
 }
 
 impl Group {
+    pub fn deserialize_from<R>(mut r: R, blk_size: u32, count: usize) -> anyhow::Result<Vec<Group>>
+    where
+        R: Read + Seek,
+    {
+        let mut groups = Vec::with_capacity(count);
+        let mut buf = Vec::with_capacity(blk_size as usize);
+        unsafe {
+            buf.set_len(blk_size as usize);
+        }
+
+        for i in 0..count {
+            let offset = util::block_group_size(blk_size) as u64 * i as u64 + SUPERBLOCK_SIZE;
+            r.seek(SeekFrom::Start(offset))?;
+            r.read_exact(&mut buf)?;
+            let data_bitmap = BitVec::<Lsb0, u8>::from_slice(&mut buf);
+            r.read_exact(&mut buf)?;
+            let inode_bitmap = BitVec::<Lsb0, u8>::from_slice(&mut buf);
+            groups.push(Group {
+                data_bitmap,
+                inode_bitmap,
+            });
+        }
+
+        Ok(groups)
+    }
+
     pub fn has_inode(&self, i: usize) -> bool {
         let mut x = i;
         if x > 0 {

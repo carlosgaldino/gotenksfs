@@ -1,6 +1,6 @@
 use crate::gotenks::{
-    fs::{load_bitmaps, GotenksFS},
-    types::Superblock,
+    fs::GotenksFS,
+    types::{Group, Superblock},
 };
 use anyhow::anyhow;
 use io::BufReader;
@@ -22,10 +22,9 @@ where
     P: AsRef<Path>,
 {
     let file = File::open(image_path.as_ref())?;
-    let reader = BufReader::new(&file);
-    let sb: Superblock = Superblock::deserialize_from(reader)?;
+    let sb: Superblock = Superblock::deserialize_from(BufReader::new(&file))?;
 
-    let groups = load_bitmaps(&sb, file)?;
+    let groups = Group::deserialize_from(BufReader::new(&file), sb.block_size, sb.groups as usize)?;
     let mut fs = GotenksFS {
         sb: Some(sb),
         image: Some(PathBuf::from(image_path.as_ref())),

@@ -2,7 +2,6 @@ use super::{
     types::{Group, Inode, Superblock},
     util, INODE_SIZE, ROOT_INODE, SUPERBLOCK_SIZE,
 };
-use bitvec::prelude::*;
 use nix::{errno::Errno, sys::stat::SFlag};
 use std::{
     fs,
@@ -84,34 +83,6 @@ impl GotenksFS {
 
         seek_pos as u64
     }
-}
-
-pub fn load_bitmaps(sb: &Superblock, f: fs::File) -> anyhow::Result<Vec<Group>> {
-    let mut groups = Vec::with_capacity(sb.groups as _);
-    let mut reader = io::BufReader::new(f);
-    reader.seek(io::SeekFrom::Start(SUPERBLOCK_SIZE))?;
-    let mut buf = Vec::with_capacity(sb.block_size as usize);
-    unsafe {
-        buf.set_len(sb.block_size as _);
-    }
-    for i in 0..sb.groups {
-        if i > 0 {
-            reader.seek(io::SeekFrom::Current(
-                (util::block_group_size(sb.block_size) - 2 * sb.block_size) as _, // minus the bitmaps
-            ))?;
-        }
-
-        reader.read_exact(&mut buf)?;
-        let data_bitmap = BitVec::<Lsb0, u8>::from_slice(&mut buf);
-        reader.read_exact(&mut buf)?;
-        let inode_bitmap = BitVec::<Lsb0, u8>::from_slice(&mut buf);
-        groups.push(Group {
-            data_bitmap,
-            inode_bitmap,
-        });
-    }
-
-    Ok(groups)
 }
 
 fn save_bitmaps<W>(groups: &[Group], blk_size: u32, w: &mut W) -> anyhow::Result<()>
