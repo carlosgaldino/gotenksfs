@@ -1,4 +1,4 @@
-use crate::fs;
+use crate::gotenks::{types::Superblock, util, SUPERBLOCK_SIZE};
 use anyhow::anyhow;
 use byte_unit::{Byte, ByteUnit};
 use std::{
@@ -11,7 +11,7 @@ pub fn make<P>(path: P, file_size: u32, blk_size: u32) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
 {
-    let bg_size = fs::util::block_group_size(blk_size);
+    let bg_size = util::block_group_size(blk_size);
     if file_size < bg_size - 2 * blk_size {
         return Err(anyhow!(format!(
             "File size must be at least {} for block size of {}",
@@ -23,14 +23,14 @@ where
     let groups = file_size / bg_size + 1;
     let file = create_file(path.as_ref())?;
     let mut buf = BufWriter::new(file);
-    let mut sb = fs::types::Superblock::new(blk_size, groups as _);
+    let mut sb = Superblock::new(blk_size, groups as _);
 
     sb.checksum();
 
     buf.write_all(&bincode::serialize(&sb)?)?;
     buf.write_all(&vec![
         0u8;
-        (fs::SUPERBLOCK_SIZE - bincode::serialized_size(&sb)?)
+        (SUPERBLOCK_SIZE - bincode::serialized_size(&sb)?)
             as usize
     ])?;
 

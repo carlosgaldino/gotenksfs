@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use byte_unit::Byte;
 use clap;
 
-mod fs;
+mod gotenks;
 mod mkfs;
 mod mount;
 

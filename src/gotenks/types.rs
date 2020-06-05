@@ -1,7 +1,7 @@
-use super::{util, GOTENKS_MAGIC};
-use anyhow::anyhow;
+use super::{util, GOTENKS_MAGIC, SUPERBLOCK_SIZE};
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Superblock {
@@ -38,9 +38,21 @@ impl Superblock {
         }
     }
 
-    pub fn checksum(&mut self) {
-        self.checksum = 0;
-        self.checksum = util::calculate_checksum(&self);
+    pub fn size() -> u64 {
+        SUPERBLOCK_SIZE
+    }
+
+    pub fn serialize(&mut self) -> anyhow::Result<Vec<u8>> {
+        self.checksum();
+        bincode::serialize(self).map_err(|e| e.into())
+    }
+
+    pub fn serialize_into<W>(&mut self, w: W) -> anyhow::Result<()>
+    where
+        W: Write,
+    {
+        self.checksum();
+        bincode::serialize_into(w, self).map_err(|e| e.into())
     }
 
     pub fn verify_checksum(&mut self) -> bool {
@@ -55,6 +67,11 @@ impl Superblock {
 
     pub fn update_modified_at(&mut self) {
         self.modified_at = Some(util::now());
+    }
+
+    fn checksum(&mut self) {
+        self.checksum = 0;
+        self.checksum = util::calculate_checksum(&self);
     }
 }
 
@@ -96,8 +113,22 @@ pub struct Inode {
 }
 
 impl Inode {
-    pub fn serialize(&self) -> anyhow::Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|_e| anyhow!("Failed to save inode"))
+    pub fn size() -> u32 {
+        let serialized_size = bincode::serialized_size(&Self::default()).unwrap();
+        serialized_size.next_power_of_two() as u32
+    }
+
+    pub fn serialize(&mut self) -> anyhow::Result<Vec<u8>> {
+        self.checksum();
+        bincode::serialize(self).map_err(|e| e.into())
+    }
+
+    pub fn serialize_into<W>(&mut self, w: W) -> anyhow::Result<()>
+    where
+        W: Write,
+    {
+        self.checksum();
+        bincode::serialize_into(w, self).map_err(|e| e.into())
     }
 
     #[allow(dead_code)]

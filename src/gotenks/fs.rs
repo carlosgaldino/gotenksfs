@@ -30,16 +30,16 @@ impl GotenksFS {
         inode.created_at = util::now();
 
         group.add_inode(ROOT_INODE as usize);
-        self.save_inode(inode, ROOT_INODE)
+        self.save_inode(&mut inode, ROOT_INODE)
     }
 
-    fn save_inode(&mut self, inode: Inode, index: u32) -> anyhow::Result<()> {
+    fn save_inode(&mut self, inode: &mut Inode, index: u32) -> anyhow::Result<()> {
         let file = fs::OpenOptions::new()
             .write(true)
             .open(self.image.as_ref().unwrap())?;
         let mut writer = io::BufWriter::new(file);
         writer.seek(io::SeekFrom::Start(self.inode_seek_position(index)))?;
-        writer.write_all(&inode.serialize()?)?;
+        inode.serialize_into(&mut writer)?;
 
         Ok(writer.flush()?)
     }
@@ -79,7 +79,7 @@ impl GotenksFS {
         let block_size = self.sb.as_ref().unwrap().block_size;
         let seek_pos = group_index * util::block_group_size(block_size)
             + 2 * block_size
-            + bitmap_index * util::inode_size()
+            + bitmap_index * Inode::size()
             + SUPERBLOCK_SIZE as u32;
 
         seek_pos as u64
@@ -188,8 +188,10 @@ impl fuse_rs::Filesystem for GotenksFS {
             })?;
         let mut writer = io::BufWriter::new(file);
 
-        self.sb.as_mut().unwrap().checksum();
-        bincode::serialize_into(&mut writer, self.sb.as_ref().unwrap())
+        self.sb
+            .as_mut()
+            .unwrap()
+            .serialize_into(&mut writer)
             .or_else(|_| Err(Errno::EIO))?;
         save_bitmaps(
             self.groups.as_ref().unwrap(),

@@ -1,7 +1,9 @@
-use crate::fs;
-
 use anyhow::anyhow;
-use fs::gotenks::GotenksFS;
+// use gotenks::GotenksFS;
+use crate::gotenks::{
+    fs::{load_bitmaps, GotenksFS},
+    types::Superblock,
+};
 use io::BufReader;
 use std::{
     ffi::OsString,
@@ -22,13 +24,13 @@ where
 {
     let file = File::open(image_path.as_ref())?;
     let reader = BufReader::new(&file);
-    let mut sb: fs::types::Superblock = bincode::deserialize_from(reader)?;
+    let mut sb: Superblock = bincode::deserialize_from(reader)?;
 
     if !sb.verify_checksum() {
         return Err(anyhow!("Superblock checksum verification failed"));
     }
 
-    let groups = fs::gotenks::load_bitmaps(&sb, file)?;
+    let groups = load_bitmaps(&sb, file)?;
     let mut fs = GotenksFS {
         sb: Some(sb),
         image: Some(PathBuf::from(image_path.as_ref())),

@@ -25,14 +25,9 @@ pub fn block_group_size(blk_size: u32) -> u32 {
 }
 
 pub fn inode_table_size(blk_size: u32) -> u32 {
-    blk_size * 8 * inode_size()
+    blk_size * 8 * Inode::size()
 }
 
 pub fn data_table_size(blk_size: u32) -> u32 {
     blk_size * blk_size * 8
-}
-
-pub fn inode_size() -> u32 {
-    let serialized_size = bincode::serialized_size(&Inode::default()).unwrap();
-    serialized_size.next_power_of_two() as u32
 }
