@@ -47,6 +47,7 @@ impl Superblock {
         self.modified_at = Some(util::now());
     }
 
+    #[allow(dead_code)]
     pub fn serialize(&mut self) -> anyhow::Result<Vec<u8>> {
         self.checksum();
         bincode::serialize(self).map_err(|e| e.into())
@@ -98,7 +99,7 @@ impl Group {
     where
         W: Write + Seek,
     {
-        assert!(groups.len() > 0);
+        assert!(!groups.is_empty());
         let blk_size = groups.first().unwrap().inode_bitmap.len() / 8;
         for (i, g) in groups.iter().enumerate() {
             let offset =
@@ -125,9 +126,9 @@ impl Group {
             let offset = util::block_group_size(blk_size) as u64 * i as u64 + SUPERBLOCK_SIZE;
             r.seek(SeekFrom::Start(offset))?;
             r.read_exact(&mut buf)?;
-            let data_bitmap = BitVec::<Lsb0, u8>::from_slice(&mut buf);
+            let data_bitmap = BitVec::<Lsb0, u8>::from_slice(&buf);
             r.read_exact(&mut buf)?;
-            let inode_bitmap = BitVec::<Lsb0, u8>::from_slice(&mut buf);
+            let inode_bitmap = BitVec::<Lsb0, u8>::from_slice(&buf);
             groups.push(Group {
                 data_bitmap,
                 inode_bitmap,

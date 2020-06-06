@@ -1,6 +1,5 @@
 use anyhow::anyhow;
 use byte_unit::Byte;
-use clap;
 
 mod gotenks;
 mod mkfs;

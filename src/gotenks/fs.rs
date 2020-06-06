@@ -68,7 +68,7 @@ impl GotenksFS {
     fn inode_offsets(&self, index: u32) -> (u32, u32) {
         let inodes_per_group = self.superblock().data_blocks_per_group;
         let inode_bg = (index - 1) / inodes_per_group;
-        (inode_bg, index - 1 & (inodes_per_group - 1))
+        (inode_bg, (index - 1) & (inodes_per_group - 1))
     }
 
     fn inode_seek_position(&self, index: u32) -> u64 {
