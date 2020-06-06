@@ -2,6 +2,9 @@ use super::{
     types::{Group, Inode, Superblock},
     util, INODE_SIZE, ROOT_INODE, SUPERBLOCK_SIZE,
 };
+use fs::OpenOptions;
+use io::{Cursor, SeekFrom};
+use memmap::MmapMut;
 use nix::{errno::Errno, sys::stat::SFlag};
 use std::{
     fs,
@@ -13,10 +16,36 @@ use std::{
 pub struct GotenksFS {
     pub sb: Option<Superblock>,
     pub image: Option<PathBuf>,
+    pub mmap: Option<MmapMut>,
     pub groups: Option<Vec<Group>>,
 }
 
 impl GotenksFS {
+    pub fn new<P>(image_path: P) -> anyhow::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(image_path.as_ref())?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        let mut cursor = Cursor::new(&mmap);
+        let sb: Superblock = Superblock::deserialize_from(&mut cursor)?;
+        let groups = Group::deserialize_from(&mut cursor, sb.block_size, sb.groups as usize)?;
+
+        let mut fs = Self {
+            sb: Some(sb),
+            image: Some(PathBuf::from(image_path.as_ref())),
+            groups: Some(groups),
+            mmap: Some(mmap),
+        };
+
+        fs.create_root()?;
+
+        Ok(fs)
+    }
+
     pub fn create_root(&mut self) -> anyhow::Result<()> {
         let group = self.groups_mut().get_mut(0).unwrap();
         if group.has_inode(ROOT_INODE as _) {
@@ -33,14 +62,13 @@ impl GotenksFS {
     }
 
     fn save_inode(&mut self, inode: &mut Inode, index: u32) -> anyhow::Result<()> {
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .open(self.image.as_ref().unwrap())?;
-        let mut writer = io::BufWriter::new(file);
-        writer.seek(io::SeekFrom::Start(self.inode_seek_position(index)))?;
-        inode.serialize_into(&mut writer)?;
+        let offset = self.inode_seek_position(index);
+        let buf = self.mmap_mut().as_mut();
+        let mut cursor = Cursor::new(buf);
+        cursor.seek(SeekFrom::Start(offset))?;
+        inode.serialize_into(&mut cursor)?;
 
-        Ok(writer.flush()?)
+        Ok(cursor.flush()?)
     }
 
     fn find_inode(&self, index: u32) -> fuse_rs::Result<Inode> {
@@ -54,13 +82,14 @@ impl GotenksFS {
             return Err(Errno::ENOENT);
         }
 
-        let file = fs::File::open(self.image.as_ref().unwrap()).map_err(|_e| Errno::EIO)?;
-        let mut reader = io::BufReader::new(file);
-        reader
-            .seek(io::SeekFrom::Start(self.inode_seek_position(index)))
+        let offset = self.inode_seek_position(index);
+        let buf = self.mmap();
+        let mut cursor = Cursor::new(buf);
+        cursor
+            .seek(SeekFrom::Start(offset))
             .map_err(|_e| Errno::EIO)?;
 
-        let inode = Inode::deserialize_from(reader).map_err(|_e| Errno::EIO)?;
+        let inode = Inode::deserialize_from(cursor).map_err(|_e| Errno::EIO)?;
         Ok(inode)
     }
 
@@ -96,6 +125,14 @@ impl GotenksFS {
 
     fn superblock_mut(&mut self) -> &mut Superblock {
         self.sb.as_mut().unwrap()
+    }
+
+    fn mmap(&self) -> &MmapMut {
+        self.mmap.as_ref().unwrap()
+    }
+
+    fn mmap_mut(&mut self) -> &mut MmapMut {
+        self.mmap.as_mut().unwrap()
     }
 }
 
@@ -149,6 +186,7 @@ impl fuse_rs::Filesystem for GotenksFS {
     }
 
     fn destroy(&mut self) -> fuse_rs::Result<()> {
+        self.mmap().flush().or_else(|_| Err(Errno::EIO))?;
         let file = fs::OpenOptions::new()
             .write(true)
             .open(self.image.as_ref().unwrap())

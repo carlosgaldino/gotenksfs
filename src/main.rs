@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use byte_unit::Byte;
 
 mod gotenks;
@@ -48,7 +47,7 @@ fn main() -> anyhow::Result<()> {
 
         let file_size = match Byte::from_str(file_size) {
             Ok(size) => size.get_bytes(),
-            Err(err) => return Err(anyhow!(err)),
+            Err(err) => return Err(err.into()),
         };
 
         mkfs::make(file_name, file_size as u32, blk_size)?;

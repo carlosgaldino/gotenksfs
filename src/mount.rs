@@ -1,19 +1,11 @@
-use crate::gotenks::{
-    fs::GotenksFS,
-    types::{Group, Superblock},
-};
+use crate::gotenks::fs::GotenksFS;
 use anyhow::anyhow;
-use io::BufReader;
-use std::{
-    ffi::OsString,
-    fs::File,
-    io,
-    path::{Path, PathBuf},
-};
+use std::{ffi::OsString, path::Path};
 
 static mut FS: GotenksFS = GotenksFS {
     sb: None,
     image: None,
+    mmap: None,
     groups: None,
 };
 
@@ -21,20 +13,8 @@ pub fn mount<P>(image_path: P, mountpoint: P) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
 {
-    let file = File::open(image_path.as_ref())?;
-    let sb: Superblock = Superblock::deserialize_from(BufReader::new(&file))?;
-
-    let groups = Group::deserialize_from(BufReader::new(&file), sb.block_size, sb.groups as usize)?;
-    let mut fs = GotenksFS {
-        sb: Some(sb),
-        image: Some(PathBuf::from(image_path.as_ref())),
-        groups: Some(groups),
-    };
-
-    fs.create_root()?;
-
     unsafe {
-        FS = fs;
+        FS = GotenksFS::new(image_path)?;
     }
 
     let opts = vec![

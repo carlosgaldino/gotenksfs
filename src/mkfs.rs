@@ -14,9 +14,10 @@ where
     let bg_size = util::block_group_size(blk_size);
     if file_size < bg_size - 2 * blk_size {
         return Err(anyhow!(format!(
-            "File size must be at least {} for block size of {}",
+            "File size must be at least {} for block size of {}. Specified size: {}",
             Byte::from_bytes(bg_size as _).get_appropriate_unit(true),
-            Byte::from_bytes(blk_size as _).get_adjusted_unit(ByteUnit::B)
+            Byte::from_bytes(blk_size as _).get_adjusted_unit(ByteUnit::B),
+            Byte::from_bytes(file_size as _).get_appropriate_unit(true)
         )));
     }
 
