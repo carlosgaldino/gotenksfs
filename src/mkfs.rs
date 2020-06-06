@@ -25,9 +25,7 @@ where
     let mut buf = BufWriter::new(&file);
     let mut sb = Superblock::new(blk_size, groups as _);
 
-    let mut serialized_buf = sb.serialize()?;
-    serialized_buf.resize(SUPERBLOCK_SIZE as _, 0u8);
-    buf.write_all(&serialized_buf)?;
+    sb.serialize_into(&mut buf)?;
 
     buf.flush()?;
 
