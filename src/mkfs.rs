@@ -7,12 +7,12 @@ use std::{
     path::Path,
 };
 
-pub fn make<P>(path: P, file_size: u32, blk_size: u32) -> anyhow::Result<()>
+pub fn make<P>(path: P, file_size: u64, blk_size: u32) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
 {
     let bg_size = util::block_group_size(blk_size);
-    if file_size < bg_size - 2 * blk_size {
+    if file_size < (bg_size - 2 * blk_size) as u64 {
         return Err(anyhow!(format!(
             "File size must be at least {} for block size of {}. Specified size: {}",
             Byte::from_bytes(bg_size as _).get_appropriate_unit(true),
@@ -21,7 +21,7 @@ where
         )));
     }
 
-    let groups = file_size / bg_size + 1;
+    let groups = file_size / (bg_size + 1) as u64;
     let file = OpenOptions::new().write(true).create_new(true).open(path)?;
     let mut buf = BufWriter::new(&file);
     let mut sb = Superblock::new(blk_size, groups as _);

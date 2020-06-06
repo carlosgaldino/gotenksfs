@@ -109,7 +109,7 @@ impl Group {
             w.write_all(g.inode_bitmap.as_slice())?;
         }
 
-        Ok(w.flush()?)
+        Ok(())
     }
 
     pub fn deserialize_from<R>(mut r: R, blk_size: u32, count: usize) -> anyhow::Result<Vec<Group>>

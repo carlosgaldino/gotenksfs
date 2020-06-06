@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
             Err(err) => return Err(err.into()),
         };
 
-        mkfs::make(file_name, file_size as u32, blk_size)?;
+        mkfs::make(file_name, file_size, blk_size)?;
     }
 
     if let Some(matches) = matches.subcommand_matches("mount") {

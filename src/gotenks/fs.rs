@@ -9,6 +9,7 @@ use nix::{errno::Errno, sys::stat::SFlag};
 use std::{
     fs,
     io::{self, prelude::*},
+    mem,
     path::{Path, PathBuf},
 };
 
@@ -66,9 +67,8 @@ impl GotenksFS {
         let buf = self.mmap_mut().as_mut();
         let mut cursor = Cursor::new(buf);
         cursor.seek(SeekFrom::Start(offset))?;
-        inode.serialize_into(&mut cursor)?;
 
-        Ok(cursor.flush()?)
+        Ok(inode.serialize_into(&mut cursor)?)
     }
 
     fn find_inode(&self, index: u32) -> fuse_rs::Result<Inode> {
@@ -186,21 +186,17 @@ impl fuse_rs::Filesystem for GotenksFS {
     }
 
     fn destroy(&mut self) -> fuse_rs::Result<()> {
-        self.mmap().flush().or_else(|_| Err(Errno::EIO))?;
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .open(self.image.as_ref().unwrap())
-            .or_else(|e| {
-                e.raw_os_error()
-                    .map_or_else(|| Err(Errno::EINVAL), |e| Err(Errno::from_i32(e)))
-            })?;
-        let mut writer = io::BufWriter::new(file);
+        let mut mmap = mem::replace(&mut self.mmap, None).unwrap();
+        let buf = mmap.as_mut();
+        let mut cursor = Cursor::new(buf);
 
         self.superblock_mut()
-            .serialize_into(&mut writer)
-            .or_else(|_| Err(Errno::EIO))?;
+            .serialize_into(&mut cursor)
+            .map_err(|_| Errno::EIO)?;
 
-        Group::serialize_into(&mut writer, self.groups()).or_else(|_| Err(Errno::EIO))
+        Group::serialize_into(&mut cursor, self.groups()).map_err(|_| Errno::EIO)?;
+
+        Ok(mmap.flush().map_err(|_| Errno::EIO)?)
     }
 }
 
