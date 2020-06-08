@@ -1,6 +1,6 @@
 use super::{util, GOTENKS_MAGIC, SUPERBLOCK_SIZE};
 use anyhow::anyhow;
-use bitvec::prelude::*;
+use bitvec::{order::Lsb0, vec::BitVec};
 use serde::{Deserialize, Serialize};
 use std::io::{prelude::*, SeekFrom};
 
@@ -100,7 +100,7 @@ impl Group {
         W: Write + Seek,
     {
         assert!(!groups.is_empty());
-        let blk_size = groups.first().unwrap().inode_bitmap.len() / 8;
+        let blk_size = groups.first().unwrap().data_bitmap.len() / 8;
         for (i, g) in groups.iter().enumerate() {
             let offset =
                 util::block_group_size(blk_size as u32) as u64 * i as u64 + SUPERBLOCK_SIZE;
@@ -205,6 +205,8 @@ impl Inode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitvec::bitvec;
+    use std::io::Cursor;
     use std::time::{self, SystemTime};
 
     #[test]
@@ -271,5 +273,40 @@ mod tests {
         group.add_inode(1024);
         assert!(group.has_inode(1024));
         assert!(group.inode_bitmap[1023]);
+    }
+
+    #[test]
+    fn group_serialization() -> anyhow::Result<()> {
+        let block_group_size = util::block_group_size(8);
+        let mut groups = Vec::new();
+        for i in 0..3 {
+            let iter = std::iter::successors(Some(i & 1), |n| Some(n ^ 1));
+            let mut db = BitVec::new();
+            db.extend(iter.take(64).map(|n| n != 0));
+
+            let iter = std::iter::successors(Some(i + 1 & 1), |n| Some(n ^ 1));
+            let mut ib = BitVec::new();
+            ib.extend(iter.take(64).map(|n| n != 0));
+            groups.push(Group {
+                data_bitmap: db,
+                inode_bitmap: ib,
+            });
+        }
+
+        let buf = vec![0u8; SUPERBLOCK_SIZE as usize + block_group_size as usize * 3];
+        let mut cursor = Cursor::new(buf);
+        Group::serialize_into(&mut cursor, &groups)?;
+
+        let deserialized = Group::deserialize_from(&mut cursor, 8, 3)?;
+        for (i, g) in deserialized.into_iter().enumerate() {
+            let bitmap = if i & 1 == 0 { 0b10101010 } else { 0b01010101 };
+            let vec = std::iter::repeat(bitmap).take(8).collect::<Vec<u8>>();
+            assert_eq!(g.data_bitmap.into_vec(), vec);
+
+            let vec = std::iter::repeat(!bitmap).take(8).collect::<Vec<u8>>();
+            assert_eq!(g.inode_bitmap.into_vec(), vec);
+        }
+
+        Ok(())
     }
 }
