@@ -21,7 +21,7 @@ where
         )));
     }
 
-    let groups = file_size / (bg_size + 1) as u64;
+    let groups = (file_size as f64 / bg_size as f64).ceil();
     let file = OpenOptions::new().write(true).create_new(true).open(path)?;
     let mut buf = BufWriter::new(&file);
     let mut sb = Superblock::new(blk_size, groups as _);

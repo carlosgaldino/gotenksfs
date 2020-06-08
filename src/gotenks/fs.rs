@@ -200,8 +200,11 @@ impl fuse_rs::Filesystem for GotenksFS {
 
 #[cfg(test)]
 mod tests {
-    use super::GotenksFS;
-    use crate::gotenks::{types::Superblock, INODE_SIZE};
+    use super::*;
+    use crate::{
+        gotenks::{types::Superblock, util, INODE_SIZE, ROOT_INODE},
+        mkfs,
+    };
 
     #[test]
     fn inode_offsets() {
@@ -240,5 +243,25 @@ mod tests {
 
         let offset = fs.inode_seek_position(8192);
         assert_eq!(3072 + 8191 * INODE_SIZE, offset); // superblock + data bitmap + inode bitmap + 8191 inodes
+    }
+
+    #[test]
+    fn initialize_fs() -> anyhow::Result<()> {
+        let mut tmp_file = std::env::temp_dir();
+        tmp_file.push("test.img");
+
+        let block_size = 128;
+        let block_group_size = util::block_group_size(block_size);
+        mkfs::make(&tmp_file, block_group_size as u64, block_size)?;
+
+        let fs = GotenksFS::new(&tmp_file)?;
+        let inode = fs.find_inode(ROOT_INODE)?;
+
+        assert_eq!(inode.mode, SFlag::S_IFDIR.bits() | 0o777);
+        assert_eq!(inode.hard_links, 2);
+
+        assert!(fs.groups().get(0).unwrap().has_inode(ROOT_INODE as _));
+
+        Ok(std::fs::remove_file(&tmp_file)?)
     }
 }
