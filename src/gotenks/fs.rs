@@ -205,6 +205,8 @@ mod tests {
         gotenks::{types::Superblock, util, INODE_SIZE, ROOT_INODE},
         mkfs,
     };
+    use fuse_rs::Filesystem;
+    use std::path::PathBuf;
 
     #[test]
     fn inode_offsets() {
@@ -246,15 +248,9 @@ mod tests {
     }
 
     #[test]
-    fn initialize_fs() -> anyhow::Result<()> {
-        let mut tmp_file = std::env::temp_dir();
-        tmp_file.push("test.img");
-
-        let block_size = 128;
-        let block_group_size = util::block_group_size(block_size);
-        mkfs::make(&tmp_file, block_group_size as u64, block_size)?;
-
-        let fs = GotenksFS::new(&tmp_file)?;
+    fn new_fs() -> anyhow::Result<()> {
+        let tmp_file = make_fs("new_fs")?;
+        let mut fs = GotenksFS::new(&tmp_file)?;
         let inode = fs.find_inode(ROOT_INODE)?;
 
         assert_eq!(inode.mode, SFlag::S_IFDIR.bits() | 0o777);
@@ -262,6 +258,53 @@ mod tests {
 
         assert!(fs.groups().get(0).unwrap().has_inode(ROOT_INODE as _));
 
+        assert_eq!(fs.superblock().groups, fs.groups().len() as u32);
+
         Ok(std::fs::remove_file(&tmp_file)?)
+    }
+
+    #[test]
+    fn init_destroy() -> anyhow::Result<()> {
+        let tmp_file = make_fs("init_destroy")?;
+        let mut fs = GotenksFS::new(&tmp_file)?;
+
+        assert_eq!(fs.superblock().last_mounted_at, None);
+
+        fs.init(&mut fuse_rs::fs::ConnectionInfo::default())?;
+        fs.destroy()?;
+
+        let fs = GotenksFS::new(&tmp_file)?;
+
+        assert_ne!(fs.superblock().last_mounted_at, None);
+
+        Ok(std::fs::remove_file(&tmp_file)?)
+    }
+
+    #[test]
+    fn metadata() -> anyhow::Result<()> {
+        let tmp_file = make_fs("metadata")?;
+        let fs = GotenksFS::new(&tmp_file)?;
+        let inode = fs.metadata(Path::new("/"))?;
+
+        assert_eq!(inode.st_ino, ROOT_INODE as u64);
+        assert_eq!(inode.st_mode, SFlag::S_IFDIR.bits() | 0o777);
+        assert_eq!(inode.st_nlink, 2);
+
+        Ok(std::fs::remove_file(&tmp_file)?)
+    }
+
+    fn make_fs(name: &str) -> anyhow::Result<PathBuf> {
+        let mut tmp_file = std::env::temp_dir();
+        tmp_file.push(name);
+        tmp_file.set_extension("img");
+        if tmp_file.exists() {
+            std::fs::remove_file(&tmp_file)?;
+        }
+
+        let block_size = 128;
+        let block_group_size = util::block_group_size(block_size);
+        mkfs::make(&tmp_file, block_group_size as u64, block_size)?;
+
+        Ok(tmp_file)
     }
 }
