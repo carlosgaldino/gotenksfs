@@ -205,7 +205,6 @@ impl Inode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitvec::bitvec;
     use std::io::Cursor;
     use std::time::{self, SystemTime};
 

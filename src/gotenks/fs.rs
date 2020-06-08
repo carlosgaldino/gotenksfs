@@ -10,13 +10,12 @@ use std::{
     fs,
     io::{self, prelude::*},
     mem,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 #[derive(Debug, Default)]
 pub struct GotenksFS {
     pub sb: Option<Superblock>,
-    pub image: Option<PathBuf>,
     pub mmap: Option<MmapMut>,
     pub groups: Option<Vec<Group>>,
 }
@@ -37,7 +36,6 @@ impl GotenksFS {
 
         let mut fs = Self {
             sb: Some(sb),
-            image: Some(PathBuf::from(image_path.as_ref())),
             groups: Some(groups),
             mmap: Some(mmap),
         };

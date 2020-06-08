@@ -4,7 +4,6 @@ use std::{ffi::OsString, path::Path};
 
 static mut FS: GotenksFS = GotenksFS {
     sb: None,
-    image: None,
     mmap: None,
     groups: None,
 };
