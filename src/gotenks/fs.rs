@@ -57,6 +57,7 @@ impl GotenksFS {
         inode.created_at = util::now();
 
         group.add_inode(ROOT_INODE as usize);
+        self.superblock_mut().free_inodes -= 1;
         self.save_inode(&mut inode, ROOT_INODE)
     }
 
@@ -208,6 +209,8 @@ mod tests {
     use fuse_rs::Filesystem;
     use std::path::PathBuf;
 
+    const BLOCK_SIZE: u32 = 128;
+
     #[test]
     fn inode_offsets() {
         let mut fs = GotenksFS::default();
@@ -250,7 +253,7 @@ mod tests {
     #[test]
     fn new_fs() -> anyhow::Result<()> {
         let tmp_file = make_fs("new_fs")?;
-        let mut fs = GotenksFS::new(&tmp_file)?;
+        let fs = GotenksFS::new(&tmp_file)?;
         let inode = fs.find_inode(ROOT_INODE)?;
 
         assert_eq!(inode.mode, SFlag::S_IFDIR.bits() | 0o777);
@@ -259,6 +262,7 @@ mod tests {
         assert!(fs.groups().get(0).unwrap().has_inode(ROOT_INODE as _));
 
         assert_eq!(fs.superblock().groups, fs.groups().len() as u32);
+        assert_eq!(fs.superblock().free_inodes, BLOCK_SIZE * 8 - 1);
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }
@@ -276,6 +280,7 @@ mod tests {
         let fs = GotenksFS::new(&tmp_file)?;
 
         assert_ne!(fs.superblock().last_mounted_at, None);
+        assert_eq!(fs.superblock().free_inodes, BLOCK_SIZE * 8 - 1);
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }
@@ -301,9 +306,8 @@ mod tests {
             std::fs::remove_file(&tmp_file)?;
         }
 
-        let block_size = 128;
-        let block_group_size = util::block_group_size(block_size);
-        mkfs::make(&tmp_file, block_group_size as u64, block_size)?;
+        let block_group_size = util::block_group_size(BLOCK_SIZE);
+        mkfs::make(&tmp_file, block_group_size as u64, BLOCK_SIZE)?;
 
         Ok(tmp_file)
     }
