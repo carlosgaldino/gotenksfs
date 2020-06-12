@@ -1,5 +1,5 @@
 use super::{
-    types::{Group, Inode, Superblock},
+    types::{Directory, Group, Inode, Superblock},
     util, INODE_SIZE, ROOT_INODE, SUPERBLOCK_SIZE,
 };
 use fs::OpenOptions;
@@ -10,7 +10,7 @@ use std::{
     fs,
     io::{self, prelude::*},
     mem,
-    path::Path,
+    path::{Component, Path},
 };
 
 #[derive(Debug, Default)]
@@ -55,19 +55,34 @@ impl GotenksFS {
         inode.mode = SFlag::S_IFDIR.bits() | 0o777;
         inode.hard_links = 2;
         inode.created_at = util::now();
+        inode.direct_blocks[0] = 1;
+
+        let dir = Directory::default();
 
         group.add_inode(ROOT_INODE as usize);
+        group.add_data_block(1);
         self.superblock_mut().free_inodes -= 1;
-        self.save_inode(&mut inode, ROOT_INODE)
+        self.superblock_mut().free_blocks -= 1;
+        self.save_inode(inode, ROOT_INODE)?;
+        self.save_dir(dir, ROOT_INODE)
     }
 
-    fn save_inode(&mut self, inode: &mut Inode, index: u32) -> anyhow::Result<()> {
+    fn save_inode(&mut self, mut inode: Inode, index: u32) -> anyhow::Result<()> {
         let offset = self.inode_seek_position(index);
         let buf = self.mmap_mut().as_mut();
         let mut cursor = Cursor::new(buf);
         cursor.seek(SeekFrom::Start(offset))?;
 
         Ok(inode.serialize_into(&mut cursor)?)
+    }
+
+    fn save_dir(&mut self, mut dir: Directory, index: u32) -> anyhow::Result<()> {
+        let offset = self.data_block_seek_position(index);
+        let buf = self.mmap_mut().as_mut();
+        let mut cursor = Cursor::new(buf);
+        cursor.seek(SeekFrom::Start(offset))?;
+
+        Ok(dir.serialize_into(&mut cursor)?)
     }
 
     fn find_inode(&self, index: u32) -> fuse_rs::Result<Inode> {
@@ -92,6 +107,41 @@ impl GotenksFS {
         Ok(inode)
     }
 
+    fn find_dir<P>(&mut self, current: Directory, path: P) -> fuse_rs::Result<Directory>
+    where
+        P: AsRef<Path>,
+    {
+        self.find_dir_from_inode(current.entry(path)?)
+    }
+
+    fn find_dir_from_inode(&mut self, index: u32) -> fuse_rs::Result<Directory> {
+        let mut inode = self.find_inode(index)?;
+        if !inode.is_dir() {
+            return Err(Errno::ENOTDIR);
+        }
+
+        // TODO: support more blocks
+        let block = inode.direct_blocks[0];
+        let (group_index, _) = self.data_block_offsets(index);
+        if !self
+            .groups()
+            .get(group_index as usize)
+            .unwrap()
+            .has_data_block(block as usize)
+        {
+            return Err(Errno::ENOENT);
+        }
+
+        inode.update_accessed_at();
+        self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
+        let mut cursor = Cursor::new(self.mmap().as_ref());
+        cursor
+            .seek(SeekFrom::Start(self.data_block_seek_position(block)))
+            .map_err(|_| Errno::EIO)?;
+
+        Directory::deserialize_from(cursor).map_err(|_| Errno::EIO)
+    }
+
     // (group_block_index, bitmap_index)
     fn inode_offsets(&self, index: u32) -> (u32, u32) {
         let inodes_per_group = self.superblock().data_blocks_per_group;
@@ -106,6 +156,26 @@ impl GotenksFS {
             + 2 * block_size
             + bitmap_index * INODE_SIZE as u32
             + SUPERBLOCK_SIZE as u32;
+
+        seek_pos as u64
+    }
+
+    fn data_block_offsets(&self, index: u32) -> (u32, u32) {
+        let data_blocks_per_group = self.superblock().data_blocks_per_group;
+        let group_index = (index - 1) / data_blocks_per_group;
+        let block_index = (index - 1) & (data_blocks_per_group - 1);
+
+        (group_index, block_index)
+    }
+
+    fn data_block_seek_position(&self, index: u32) -> u64 {
+        let (group_index, block_index) = self.data_block_offsets(index);
+        let block_size = self.superblock().block_size;
+        let seek_pos = group_index * util::block_group_size(block_size)
+            + 2 * block_size
+            + self.superblock().data_blocks_per_group * INODE_SIZE as u32
+            + SUPERBLOCK_SIZE as u32
+            + block_size * block_index;
 
         seek_pos as u64
     }
@@ -151,6 +221,43 @@ impl fuse_rs::Filesystem for GotenksFS {
             _ => return Err(Errno::ENOENT),
         }
         Ok(stat)
+    }
+
+    fn read_dir(
+        &mut self,
+        path: &Path,
+        _offset: u64,
+        _file_info: fuse_rs::fs::FileInfo,
+    ) -> fuse_rs::Result<Vec<fuse_rs::fs::DirEntry>> {
+        // TODO: check permissions
+        let mut dirnode = None;
+        for c in path.components() {
+            dirnode = if c == Component::RootDir {
+                Some(self.find_dir_from_inode(ROOT_INODE)?)
+            } else {
+                Some(self.find_dir(dirnode.unwrap(), c)?)
+            }
+        }
+
+        let dir = dirnode.ok_or(Errno::ENOENT)?;
+        let mut entries = Vec::with_capacity(dir.entries.len());
+        for (name, index) in dir.entries {
+            let inode = self.find_inode(index)?;
+            let mut stat = fuse_rs::fs::FileStat::new();
+            stat.st_ino = index as _;
+            stat.st_mode = inode.mode;
+            stat.st_nlink = inode.hard_links;
+            stat.st_atime = inode.accessed_at.unwrap_or(0);
+            stat.st_mtime = inode.modified_at.unwrap_or(0);
+            stat.st_birthtime = inode.created_at as _;
+            entries.push(fuse_rs::fs::DirEntry {
+                name: name.into_os_string(),
+                metadata: Some(stat),
+                offset: None,
+            });
+        }
+
+        Ok(entries)
     }
 
     fn statfs(&self, path: &Path) -> fuse_rs::Result<libc::statvfs> {
@@ -248,6 +355,9 @@ mod tests {
 
         let offset = fs.inode_seek_position(8192);
         assert_eq!(3072 + 8191 * INODE_SIZE, offset); // superblock + data bitmap + inode bitmap + 8191 inodes
+
+        let offset = fs.inode_seek_position(8193);
+        assert_eq!(3072 + 8192 * INODE_SIZE + 1024 * 1024 * 8 + 2048, offset); // superblock + data bitmap + inode bitmap + inode table + data blocks + data bitmap + inode bitmap
     }
 
     #[test]
@@ -260,9 +370,11 @@ mod tests {
         assert_eq!(inode.hard_links, 2);
 
         assert!(fs.groups().get(0).unwrap().has_inode(ROOT_INODE as _));
+        assert!(fs.groups().get(0).unwrap().has_data_block(ROOT_INODE as _));
 
         assert_eq!(fs.superblock().groups, fs.groups().len() as u32);
         assert_eq!(fs.superblock().free_inodes, BLOCK_SIZE * 8 - 1);
+        assert_eq!(fs.superblock().free_blocks, BLOCK_SIZE * 8 - 1);
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }
@@ -281,6 +393,7 @@ mod tests {
 
         assert_ne!(fs.superblock().last_mounted_at, None);
         assert_eq!(fs.superblock().free_inodes, BLOCK_SIZE * 8 - 1);
+        assert_eq!(fs.superblock().free_blocks, BLOCK_SIZE * 8 - 1);
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }
@@ -294,6 +407,72 @@ mod tests {
         assert_eq!(inode.st_ino, ROOT_INODE as u64);
         assert_eq!(inode.st_mode, SFlag::S_IFDIR.bits() | 0o777);
         assert_eq!(inode.st_nlink, 2);
+
+        Ok(std::fs::remove_file(&tmp_file)?)
+    }
+
+    #[test]
+    fn data_block_seek_position() {
+        let mut fs = GotenksFS::default();
+        let block_size = 1024;
+        fs.sb = Some(Superblock::new(block_size, 3));
+        fs.superblock_mut().data_blocks_per_group = block_size * 8;
+
+        let prefix = SUPERBLOCK_SIZE + 2 * block_size as u64 + block_size as u64 * INODE_SIZE * 8;
+        let offset = fs.data_block_seek_position(1);
+        assert_eq!(prefix, offset);
+
+        let offset = fs.data_block_seek_position(2);
+        assert_eq!(prefix + block_size as u64, offset);
+
+        let offset = fs.data_block_seek_position(8192);
+        assert_eq!(prefix + 8191 * block_size as u64, offset);
+
+        let offset = fs.data_block_seek_position(8193);
+        assert_eq!(
+            2 * prefix - SUPERBLOCK_SIZE + (block_size * block_size) as u64 * 8,
+            offset
+        );
+    }
+
+    #[test]
+    fn save_dir() -> anyhow::Result<()> {
+        let tmp_file = make_fs("save_dir")?;
+        let mut fs = GotenksFS::new(&tmp_file)?;
+        let dir = fs.find_dir_from_inode(ROOT_INODE)?;
+
+        assert_eq!(dir.entries.len(), 0);
+
+        Ok(std::fs::remove_file(&tmp_file)?)
+    }
+
+    #[test]
+    fn find_dir() -> anyhow::Result<()> {
+        let tmp_file = make_fs("find_dir")?;
+        let mut fs = GotenksFS::new(&tmp_file)?;
+        let root_dir = fs.find_dir_from_inode(ROOT_INODE)?;
+
+        assert_eq!(
+            fs.find_dir(root_dir, "not-a-dir").err(),
+            Some(Errno::ENOENT)
+        );
+
+        Ok(std::fs::remove_file(&tmp_file)?)
+    }
+
+    #[test]
+    fn read_dir() -> anyhow::Result<()> {
+        let tmp_file = make_fs("read_dir")?;
+        let mut fs = GotenksFS::new(&tmp_file)?;
+        let inode = fs.find_inode(ROOT_INODE)?;
+
+        assert_eq!(inode.accessed_at, None);
+
+        let entries = fs.read_dir(Path::new("/"), 0, fuse_rs::fs::FileInfo::default())?;
+        assert_eq!(entries.len(), 0);
+
+        let inode = fs.find_inode(ROOT_INODE)?;
+        assert_ne!(inode.accessed_at, None);
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }

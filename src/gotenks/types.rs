@@ -1,8 +1,13 @@
 use super::{util, GOTENKS_MAGIC, SUPERBLOCK_SIZE};
 use anyhow::anyhow;
 use bitvec::{order::Lsb0, vec::BitVec};
+use nix::errno::Errno;
 use serde::{Deserialize, Serialize};
-use std::io::{prelude::*, SeekFrom};
+use std::{
+    collections::BTreeMap,
+    io::{prelude::*, SeekFrom},
+    path::{Path, PathBuf},
+};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Superblock {
@@ -145,6 +150,14 @@ impl Group {
     pub fn add_inode(&mut self, i: usize) {
         self.inode_bitmap.set(i - 1, true);
     }
+
+    pub fn has_data_block(&self, i: usize) -> bool {
+        self.data_bitmap.get(i - 1).unwrap_or(&false) == &true
+    }
+
+    pub fn add_data_block(&mut self, i: usize) {
+        self.data_bitmap.set(i - 1, true);
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -185,6 +198,66 @@ impl Inode {
         }
 
         Ok(inode)
+    }
+
+    pub fn is_dir(&self) -> bool {
+        (self.mode & libc::S_IFDIR) != 0
+    }
+
+    pub fn update_accessed_at(&mut self) {
+        self.accessed_at = Some(util::now() as _);
+    }
+
+    fn checksum(&mut self) {
+        self.checksum = 0;
+        self.checksum = util::calculate_checksum(&self);
+    }
+
+    fn verify_checksum(&mut self) -> bool {
+        let checksum = self.checksum;
+        self.checksum = 0;
+        let ok = checksum == util::calculate_checksum(&self);
+        self.checksum = checksum;
+
+        ok
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct Directory {
+    pub entries: BTreeMap<PathBuf, u32>,
+    checksum: u32,
+}
+
+impl Directory {
+    pub fn serialize_into<W>(&mut self, w: W) -> anyhow::Result<()>
+    where
+        W: Write,
+    {
+        self.checksum();
+        bincode::serialize_into(w, self).map_err(|e| e.into())
+    }
+
+    pub fn deserialize_from<R>(r: R) -> anyhow::Result<Self>
+    where
+        R: Read,
+    {
+        let mut sb: Self = bincode::deserialize_from(r)?;
+        if !sb.verify_checksum() {
+            return Err(anyhow!("Directory checksum verification failed"));
+        }
+
+        Ok(sb)
+    }
+
+    pub fn entry<P>(&self, path: P) -> fuse_rs::Result<u32>
+    where
+        P: AsRef<Path>,
+    {
+        self.entries
+            .get(&path.as_ref().to_path_buf())
+            .ok_or(Errno::ENOENT)
+            .map(|x| *x)
     }
 
     fn checksum(&mut self) {
@@ -256,6 +329,16 @@ mod tests {
     }
 
     #[test]
+    fn inode_is_dir() {
+        let mut inode = Inode::default();
+        inode.mode = libc::S_IFREG | libc::S_IRWXO;
+        assert!(!inode.is_dir());
+
+        inode.mode |= libc::S_IFDIR;
+        assert!(inode.is_dir());
+    }
+
+    #[test]
     fn group_has_inode() {
         let mut bitmap = BitVec::<Lsb0, u8>::with_capacity(1024);
         bitmap.resize(1024, false);
@@ -272,6 +355,25 @@ mod tests {
         group.add_inode(1024);
         assert!(group.has_inode(1024));
         assert!(group.inode_bitmap[1023]);
+    }
+
+    #[test]
+    fn group_has_data_block() {
+        let mut bitmap = BitVec::<Lsb0, u8>::with_capacity(1024);
+        bitmap.resize(1024, false);
+
+        let mut group = Group::default();
+        group.data_bitmap = bitmap;
+
+        assert!(!group.has_data_block(1));
+
+        group.add_data_block(1);
+        assert!(group.has_data_block(1));
+        assert!(group.data_bitmap[0]);
+
+        group.add_data_block(1024);
+        assert!(group.has_data_block(1024));
+        assert!(group.data_bitmap[1023]);
     }
 
     #[test]
@@ -305,6 +407,55 @@ mod tests {
             let vec = std::iter::repeat(!bitmap).take(8).collect::<Vec<u8>>();
             assert_eq!(g.inode_bitmap.into_vec(), vec);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn directory_serialization() -> anyhow::Result<()> {
+        let mut entries = BTreeMap::new();
+        entries.insert(PathBuf::from("foo.txt"), 1);
+        entries.insert(PathBuf::from("bar.txt"), 2);
+        let mut dir = Directory {
+            entries,
+            checksum: 0,
+        };
+
+        let size = bincode::serialized_size(&dir)?;
+        let buf = vec![0u8; size as _];
+        let mut cursor = Cursor::new(buf);
+        dir.serialize_into(&mut cursor)?;
+        cursor.set_position(0);
+        let deserialized = Directory::deserialize_from(cursor)?;
+
+        assert_eq!(deserialized.entries.len(), 2);
+        assert_ne!(deserialized.checksum, 0);
+        for (i, (path, inode)) in deserialized.entries.iter().enumerate() {
+            if i == 0 {
+                assert_eq!(path, &PathBuf::from("bar.txt"));
+                assert_eq!(*inode, 2);
+            } else {
+                assert_eq!(path, &PathBuf::from("foo.txt"));
+                assert_eq!(*inode, 1);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn directory_entry() -> anyhow::Result<()> {
+        let mut entries = BTreeMap::new();
+        entries.insert(PathBuf::from("foo.txt"), 1);
+        entries.insert(PathBuf::from("bar.txt"), 2);
+        let dir = Directory {
+            entries,
+            checksum: 0,
+        };
+
+        assert_eq!(dir.entry("foo.txt")?, 1);
+        assert_eq!(dir.entry("bar.txt")?, 2);
+        assert_eq!(dir.entry("baz.txt").err(), Some(Errno::ENOENT));
 
         Ok(())
     }
