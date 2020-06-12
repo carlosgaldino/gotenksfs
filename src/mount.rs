@@ -20,7 +20,7 @@ where
         // OsString::from("-h"),
         OsString::from("-s"),
         OsString::from("-f"),
-        OsString::from("-d"),
+        // OsString::from("-d"),
         OsString::from("-o"),
         OsString::from("volname=gotenksfs"),
     ];

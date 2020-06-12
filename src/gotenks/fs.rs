@@ -55,6 +55,8 @@ impl GotenksFS {
         inode.mode = SFlag::S_IFDIR.bits() | 0o777;
         inode.hard_links = 2;
         inode.created_at = util::now();
+        inode.modified_at = Some(inode.created_at as _);
+        inode.changed_at = inode.modified_at;
         inode.direct_blocks[0] = 1;
 
         let dir = Directory::default();
@@ -216,6 +218,7 @@ impl fuse_rs::Filesystem for GotenksFS {
                 stat.st_nlink = inode.hard_links;
                 stat.st_atime = inode.accessed_at.unwrap_or(0);
                 stat.st_mtime = inode.modified_at.unwrap_or(0);
+                stat.st_ctime = inode.changed_at.unwrap_or(0);
                 stat.st_birthtime = inode.created_at as _;
             }
             _ => return Err(Errno::ENOENT),
@@ -249,6 +252,7 @@ impl fuse_rs::Filesystem for GotenksFS {
             stat.st_nlink = inode.hard_links;
             stat.st_atime = inode.accessed_at.unwrap_or(0);
             stat.st_mtime = inode.modified_at.unwrap_or(0);
+            stat.st_ctime = inode.changed_at.unwrap_or(0);
             stat.st_birthtime = inode.created_at as _;
             entries.push(fuse_rs::fs::DirEntry {
                 name: name.into_os_string(),
@@ -407,6 +411,8 @@ mod tests {
         assert_eq!(inode.st_ino, ROOT_INODE as u64);
         assert_eq!(inode.st_mode, SFlag::S_IFDIR.bits() | 0o777);
         assert_eq!(inode.st_nlink, 2);
+        assert_ne!(inode.st_mtime, 0);
+        assert_ne!(inode.st_ctime, 0);
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }
