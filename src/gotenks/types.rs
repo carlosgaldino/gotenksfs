@@ -1,6 +1,7 @@
 use super::{util, GOTENKS_MAGIC, SUPERBLOCK_SIZE};
 use anyhow::anyhow;
 use bitvec::{order::Lsb0, vec::BitVec};
+use fuse_rs::fs::FileStat;
 use nix::errno::Errno;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -206,6 +207,19 @@ impl Inode {
 
     pub fn update_accessed_at(&mut self) {
         self.accessed_at = Some(util::now() as _);
+    }
+
+    pub fn to_stat(&self, index: u32) -> FileStat {
+        let mut stat = FileStat::new();
+        stat.st_ino = index as _;
+        stat.st_mode = self.mode;
+        stat.st_nlink = self.hard_links;
+        stat.st_atime = self.accessed_at.unwrap_or(0);
+        stat.st_mtime = self.modified_at.unwrap_or(0);
+        stat.st_ctime = self.changed_at.unwrap_or(0);
+        stat.st_birthtime = self.created_at as _;
+
+        stat
     }
 
     fn checksum(&mut self) {

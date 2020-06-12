@@ -209,21 +209,13 @@ impl GotenksFS {
 
 impl fuse_rs::Filesystem for GotenksFS {
     fn metadata(&self, path: &Path) -> fuse_rs::Result<fuse_rs::fs::FileStat> {
-        let mut stat = fuse_rs::fs::FileStat::new();
         match path.to_str().expect("path") {
             "/" => {
                 let inode = self.find_inode(ROOT_INODE)?;
-                stat.st_ino = ROOT_INODE as _;
-                stat.st_mode = inode.mode;
-                stat.st_nlink = inode.hard_links;
-                stat.st_atime = inode.accessed_at.unwrap_or(0);
-                stat.st_mtime = inode.modified_at.unwrap_or(0);
-                stat.st_ctime = inode.changed_at.unwrap_or(0);
-                stat.st_birthtime = inode.created_at as _;
+                return Ok(inode.to_stat(ROOT_INODE));
             }
             _ => return Err(Errno::ENOENT),
         }
-        Ok(stat)
     }
 
     fn read_dir(
@@ -246,14 +238,7 @@ impl fuse_rs::Filesystem for GotenksFS {
         let mut entries = Vec::with_capacity(dir.entries.len());
         for (name, index) in dir.entries {
             let inode = self.find_inode(index)?;
-            let mut stat = fuse_rs::fs::FileStat::new();
-            stat.st_ino = index as _;
-            stat.st_mode = inode.mode;
-            stat.st_nlink = inode.hard_links;
-            stat.st_atime = inode.accessed_at.unwrap_or(0);
-            stat.st_mtime = inode.modified_at.unwrap_or(0);
-            stat.st_ctime = inode.changed_at.unwrap_or(0);
-            stat.st_birthtime = inode.created_at as _;
+            let stat = inode.to_stat(index);
             entries.push(fuse_rs::fs::DirEntry {
                 name: name.into_os_string(),
                 metadata: Some(stat),
