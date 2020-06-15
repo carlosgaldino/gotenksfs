@@ -3,6 +3,7 @@ use super::{
     util, INODE_SIZE, ROOT_INODE, SUPERBLOCK_SIZE,
 };
 use fs::OpenOptions;
+use fuse_rs::fs::FileStat;
 use io::{Cursor, SeekFrom};
 use memmap::MmapMut;
 use nix::{errno::Errno, sys::stat::SFlag};
@@ -231,7 +232,7 @@ impl GotenksFS {
 }
 
 impl fuse_rs::Filesystem for GotenksFS {
-    fn metadata(&self, path: &Path) -> fuse_rs::Result<fuse_rs::fs::FileStat> {
+    fn metadata(&self, path: &Path) -> fuse_rs::Result<FileStat> {
         match path.parent() {
             None => Ok(self.find_inode(ROOT_INODE)?.to_stat(ROOT_INODE)),
             Some(parent) => {
@@ -343,7 +344,7 @@ mod tests {
         gotenks::{types::Superblock, util, INODE_SIZE, ROOT_INODE},
         mkfs,
     };
-    use fuse_rs::Filesystem;
+    use fuse_rs::{fs::FileStat, Filesystem};
     use std::{ffi::OsString, path::PathBuf};
 
     const BLOCK_SIZE: u32 = 128;
@@ -516,14 +517,14 @@ mod tests {
         assert_eq!(entries.len(), 2);
 
         let bar = entries.first().unwrap();
-        let mut stat = fuse_rs::fs::FileStat::default();
+        let mut stat = FileStat::default();
         stat.st_mode = nix::sys::stat::Mode::S_IRWXU.bits();
         stat.st_ino = 3;
         assert_eq!(bar.name, OsString::from("bar.txt"));
         assert_eq!(bar.metadata, Some(stat));
 
         let foo = entries.last().unwrap();
-        let mut stat = fuse_rs::fs::FileStat::default();
+        let mut stat = FileStat::default();
         stat.st_mode = nix::sys::stat::Mode::S_IRWXO.bits();
         stat.st_ino = 2;
         assert_eq!(foo.name, OsString::from("foo.txt"));
