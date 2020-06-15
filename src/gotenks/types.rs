@@ -6,8 +6,9 @@ use nix::errno::Errno;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     io::{prelude::*, SeekFrom},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -98,6 +99,8 @@ impl Superblock {
 pub struct Group {
     pub data_bitmap: BitVec<Lsb0, u8>,
     pub inode_bitmap: BitVec<Lsb0, u8>,
+    next_inode: usize,
+    next_data_block: usize,
 }
 
 impl Group {
@@ -135,9 +138,13 @@ impl Group {
             let data_bitmap = BitVec::<Lsb0, u8>::from_slice(&buf);
             r.read_exact(&mut buf)?;
             let inode_bitmap = BitVec::<Lsb0, u8>::from_slice(&buf);
+            let next_inode = inode_bitmap.split(|_p, bit| !*bit).next().unwrap().len() + 1;
+            let next_data_block = data_bitmap.split(|_p, bit| !*bit).next().unwrap().len() + 1;
             groups.push(Group {
                 data_bitmap,
                 inode_bitmap,
+                next_inode,
+                next_data_block,
             });
         }
 
@@ -148,15 +155,37 @@ impl Group {
         self.inode_bitmap.get(i - 1).unwrap_or(&false) == &true
     }
 
-    pub fn add_inode(&mut self, i: usize) {
-        self.inode_bitmap.set(i - 1, true);
-    }
-
     pub fn has_data_block(&self, i: usize) -> bool {
         self.data_bitmap.get(i - 1).unwrap_or(&false) == &true
     }
 
-    pub fn add_data_block(&mut self, i: usize) {
+    pub fn free_inodes(&self) -> usize {
+        self.inode_bitmap.count_zeros()
+    }
+
+    pub fn free_data_blocks(&self) -> usize {
+        self.data_bitmap.count_zeros()
+    }
+
+    pub fn allocate_inode(&mut self) -> usize {
+        self.add_inode(self.next_inode);
+        let index = self.next_inode;
+        self.next_inode += 1;
+        index
+    }
+
+    pub fn allocate_data_block(&mut self) -> usize {
+        self.add_data_block(self.next_data_block);
+        let index = self.next_data_block;
+        self.next_data_block += 1;
+        index
+    }
+
+    fn add_inode(&mut self, i: usize) {
+        self.inode_bitmap.set(i - 1, true);
+    }
+
+    fn add_data_block(&mut self, i: usize) {
         self.data_bitmap.set(i - 1, true);
     }
 }
@@ -239,7 +268,7 @@ impl Inode {
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Directory {
-    pub entries: BTreeMap<PathBuf, u32>,
+    pub entries: BTreeMap<OsString, u32>,
     checksum: u32,
 }
 
@@ -269,7 +298,7 @@ impl Directory {
         P: AsRef<Path>,
     {
         self.entries
-            .get(&path.as_ref().to_path_buf())
+            .get(&path.as_ref().as_os_str().to_os_string())
             .ok_or(Errno::ENOENT)
             .map(|x| *x)
     }
@@ -359,16 +388,21 @@ mod tests {
 
         let mut group = Group::default();
         group.inode_bitmap = bitmap;
+        group.next_inode = 1;
 
         assert!(!group.has_inode(1));
 
-        group.add_inode(1);
-        assert!(group.has_inode(1));
-        assert!(group.inode_bitmap[0]);
+        let index = group.allocate_inode();
+        assert_eq!(index, 1);
+        assert!(group.has_inode(index));
+        assert!(group.inode_bitmap[index - 1]);
+        assert_eq!(group.next_inode, index + 1);
 
-        group.add_inode(1024);
-        assert!(group.has_inode(1024));
-        assert!(group.inode_bitmap[1023]);
+        let index = group.allocate_inode();
+        assert_eq!(index, 2);
+        assert!(group.has_inode(index));
+        assert!(group.inode_bitmap[index - 1]);
+        assert_eq!(group.next_inode, index + 1);
     }
 
     #[test]
@@ -378,16 +412,21 @@ mod tests {
 
         let mut group = Group::default();
         group.data_bitmap = bitmap;
+        group.next_data_block = 1;
 
         assert!(!group.has_data_block(1));
 
-        group.add_data_block(1);
-        assert!(group.has_data_block(1));
-        assert!(group.data_bitmap[0]);
+        let index = group.allocate_data_block();
+        assert_eq!(index, 1);
+        assert!(group.has_data_block(index));
+        assert!(group.data_bitmap[index - 1]);
+        assert_eq!(group.next_data_block, index + 1);
 
-        group.add_data_block(1024);
-        assert!(group.has_data_block(1024));
-        assert!(group.data_bitmap[1023]);
+        let index = group.allocate_data_block();
+        assert_eq!(index, 2);
+        assert!(group.has_data_block(index));
+        assert!(group.data_bitmap[index - 1]);
+        assert_eq!(group.next_data_block, index + 1);
     }
 
     #[test]
@@ -405,6 +444,8 @@ mod tests {
             groups.push(Group {
                 data_bitmap: db,
                 inode_bitmap: ib,
+                next_inode: 1,
+                next_data_block: 1,
             });
         }
 
@@ -414,12 +455,18 @@ mod tests {
 
         let deserialized = Group::deserialize_from(&mut cursor, 8, 3)?;
         for (i, g) in deserialized.into_iter().enumerate() {
-            let bitmap = if i & 1 == 0 { 0b10101010 } else { 0b01010101 };
+            let (bitmap, next_data_block, next_inode) = if i & 1 == 0 {
+                (0b10101010, 1, 2)
+            } else {
+                (0b01010101, 2, 1)
+            };
             let vec = std::iter::repeat(bitmap).take(8).collect::<Vec<u8>>();
             assert_eq!(g.data_bitmap.into_vec(), vec);
+            assert_eq!(g.next_data_block, next_data_block);
 
             let vec = std::iter::repeat(!bitmap).take(8).collect::<Vec<u8>>();
             assert_eq!(g.inode_bitmap.into_vec(), vec);
+            assert_eq!(g.next_inode, next_inode);
         }
 
         Ok(())
@@ -428,8 +475,8 @@ mod tests {
     #[test]
     fn directory_serialization() -> anyhow::Result<()> {
         let mut entries = BTreeMap::new();
-        entries.insert(PathBuf::from("foo.txt"), 1);
-        entries.insert(PathBuf::from("bar.txt"), 2);
+        entries.insert(OsString::from("foo.txt"), 1);
+        entries.insert(OsString::from("bar.txt"), 2);
         let mut dir = Directory {
             entries,
             checksum: 0,
@@ -446,10 +493,10 @@ mod tests {
         assert_ne!(deserialized.checksum, 0);
         for (i, (path, inode)) in deserialized.entries.iter().enumerate() {
             if i == 0 {
-                assert_eq!(path, &PathBuf::from("bar.txt"));
+                assert_eq!(path, &OsString::from("bar.txt"));
                 assert_eq!(*inode, 2);
             } else {
-                assert_eq!(path, &PathBuf::from("foo.txt"));
+                assert_eq!(path, &OsString::from("foo.txt"));
                 assert_eq!(*inode, 1);
             }
         }
@@ -460,8 +507,8 @@ mod tests {
     #[test]
     fn directory_entry() -> anyhow::Result<()> {
         let mut entries = BTreeMap::new();
-        entries.insert(PathBuf::from("foo.txt"), 1);
-        entries.insert(PathBuf::from("bar.txt"), 2);
+        entries.insert(OsString::from("foo.txt"), 1);
+        entries.insert(OsString::from("bar.txt"), 2);
         let dir = Directory {
             entries,
             checksum: 0,

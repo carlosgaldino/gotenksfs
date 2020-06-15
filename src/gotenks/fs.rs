@@ -10,7 +10,7 @@ use std::{
     fs,
     io::{self, prelude::*},
     mem,
-    path::{Component, Path},
+    path::Path,
 };
 
 #[derive(Debug, Default)]
@@ -61,8 +61,8 @@ impl GotenksFS {
 
         let dir = Directory::default();
 
-        group.add_inode(ROOT_INODE as usize);
-        group.add_data_block(1);
+        group.allocate_inode();
+        group.allocate_data_block();
         self.superblock_mut().free_inodes -= 1;
         self.superblock_mut().free_blocks -= 1;
         self.save_inode(inode, ROOT_INODE)?;
@@ -109,15 +109,22 @@ impl GotenksFS {
         Ok(inode)
     }
 
-    fn find_dir<P>(&mut self, current: Directory, path: P) -> fuse_rs::Result<Directory>
+    fn find_dir<P>(&self, path: P) -> fuse_rs::Result<(Directory, u32)>
     where
         P: AsRef<Path>,
     {
-        self.find_dir_from_inode(current.entry(path)?)
+        let mut current = self.find_dir_from_inode(ROOT_INODE)?;
+        let mut index = ROOT_INODE;
+        for c in path.as_ref().components().skip(1) {
+            index = current.entry(c)?;
+            current = self.find_dir_from_inode(index)?;
+        }
+
+        Ok((current, index))
     }
 
-    fn find_dir_from_inode(&mut self, index: u32) -> fuse_rs::Result<Directory> {
-        let mut inode = self.find_inode(index)?;
+    fn find_dir_from_inode(&self, index: u32) -> fuse_rs::Result<Directory> {
+        let inode = self.find_inode(index)?;
         if !inode.is_dir() {
             return Err(Errno::ENOTDIR);
         }
@@ -134,8 +141,6 @@ impl GotenksFS {
             return Err(Errno::ENOENT);
         }
 
-        inode.update_accessed_at();
-        self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
         let mut cursor = Cursor::new(self.mmap().as_ref());
         cursor
             .seek(SeekFrom::Start(self.data_block_seek_position(block)))
@@ -182,6 +187,22 @@ impl GotenksFS {
         seek_pos as u64
     }
 
+    fn allocate_inode(&mut self) -> u32 {
+        let mut groups = self
+            .groups()
+            .iter()
+            .enumerate()
+            .map(|(index, g)| (index, g.free_inodes()))
+            .collect::<Vec<(usize, usize)>>();
+
+        groups.sort_by(|a, b| a.1.cmp(&b.1));
+        let (group_index, _) = groups.first().unwrap();
+        let group = self.groups_mut().get_mut(*group_index).unwrap();
+
+        let index = group.allocate_inode();
+        index as u32 + *group_index as u32 * self.superblock().data_blocks_per_group
+    }
+
     fn groups(&self) -> &[Group] {
         self.groups.as_ref().unwrap()
     }
@@ -209,12 +230,13 @@ impl GotenksFS {
 
 impl fuse_rs::Filesystem for GotenksFS {
     fn metadata(&self, path: &Path) -> fuse_rs::Result<fuse_rs::fs::FileStat> {
-        match path.to_str().expect("path") {
-            "/" => {
-                let inode = self.find_inode(ROOT_INODE)?;
-                return Ok(inode.to_stat(ROOT_INODE));
+        match path.parent() {
+            None => Ok(self.find_inode(ROOT_INODE)?.to_stat(ROOT_INODE)),
+            Some(parent) => {
+                let (parent, _) = self.find_dir(parent)?;
+                let index = parent.entry(path.file_name().ok_or(Errno::EINVAL)?.to_os_string())?;
+                Ok(self.find_inode(index)?.to_stat(index))
             }
-            _ => return Err(Errno::ENOENT),
         }
     }
 
@@ -225,28 +247,45 @@ impl fuse_rs::Filesystem for GotenksFS {
         _file_info: fuse_rs::fs::FileInfo,
     ) -> fuse_rs::Result<Vec<fuse_rs::fs::DirEntry>> {
         // TODO: check permissions
-        let mut dirnode = None;
-        for c in path.components() {
-            dirnode = if c == Component::RootDir {
-                Some(self.find_dir_from_inode(ROOT_INODE)?)
-            } else {
-                Some(self.find_dir(dirnode.unwrap(), c)?)
-            }
-        }
-
-        let dir = dirnode.ok_or(Errno::ENOENT)?;
+        let (dir, _index) = self.find_dir(path)?;
         let mut entries = Vec::with_capacity(dir.entries.len());
         for (name, index) in dir.entries {
             let inode = self.find_inode(index)?;
             let stat = inode.to_stat(index);
             entries.push(fuse_rs::fs::DirEntry {
-                name: name.into_os_string(),
+                name,
                 metadata: Some(stat),
                 offset: None,
             });
         }
 
         Ok(entries)
+    }
+
+    fn create(
+        &mut self,
+        path: &Path,
+        permissions: nix::sys::stat::Mode,
+        file_info: &mut fuse_rs::fs::OpenFileInfo,
+    ) -> fuse_rs::Result<()> {
+        let index = self.allocate_inode();
+        let mut inode = Inode::default();
+        inode.mode = permissions.bits();
+
+        let (mut parent, parent_index) = self.find_dir(path.parent().ok_or(Errno::EINVAL)?)?;
+        parent.entries.insert(
+            path.file_name()
+                .map(|p| p.to_os_string())
+                .ok_or(Errno::EINVAL)?,
+            index,
+        );
+
+        self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
+        self.save_dir(parent, parent_index)
+            .map_err(|_| Errno::EIO)?;
+
+        file_info.set_handle(index as u64);
+        Ok(())
     }
 
     fn statfs(&self, path: &Path) -> fuse_rs::Result<libc::statvfs> {
@@ -303,7 +342,7 @@ mod tests {
         mkfs,
     };
     use fuse_rs::Filesystem;
-    use std::path::PathBuf;
+    use std::{ffi::OsString, path::PathBuf};
 
     const BLOCK_SIZE: u32 = 128;
 
@@ -441,12 +480,8 @@ mod tests {
     fn find_dir() -> anyhow::Result<()> {
         let tmp_file = make_fs("find_dir")?;
         let mut fs = GotenksFS::new(&tmp_file)?;
-        let root_dir = fs.find_dir_from_inode(ROOT_INODE)?;
 
-        assert_eq!(
-            fs.find_dir(root_dir, "not-a-dir").err(),
-            Some(Errno::ENOENT)
-        );
+        assert_eq!(fs.find_dir("/not-a-dir").err(), Some(Errno::ENOENT));
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }
@@ -459,11 +494,38 @@ mod tests {
 
         assert_eq!(inode.accessed_at, None);
 
-        let entries = fs.read_dir(Path::new("/"), 0, fuse_rs::fs::FileInfo::default())?;
+        let file_info = fuse_rs::fs::FileInfo::default();
+        let entries = fs.read_dir(Path::new("/"), 0, file_info)?;
         assert_eq!(entries.len(), 0);
 
-        let inode = fs.find_inode(ROOT_INODE)?;
-        assert_ne!(inode.accessed_at, None);
+        fs.create(
+            Path::new("/foo.txt"),
+            nix::sys::stat::Mode::S_IRWXO,
+            &mut fuse_rs::fs::OpenFileInfo::default(),
+        )?;
+        fs.create(
+            Path::new("/bar.txt"),
+            nix::sys::stat::Mode::S_IRWXU,
+            &mut fuse_rs::fs::OpenFileInfo::default(),
+        )?;
+
+        let file_info = fuse_rs::fs::FileInfo::default();
+        let entries = fs.read_dir(Path::new("/"), 0, file_info)?;
+        assert_eq!(entries.len(), 2);
+
+        let bar = entries.first().unwrap();
+        let mut stat = fuse_rs::fs::FileStat::default();
+        stat.st_mode = nix::sys::stat::Mode::S_IRWXU.bits();
+        stat.st_ino = 3;
+        assert_eq!(bar.name, OsString::from("bar.txt"));
+        assert_eq!(bar.metadata, Some(stat));
+
+        let foo = entries.last().unwrap();
+        let mut stat = fuse_rs::fs::FileStat::default();
+        stat.st_mode = nix::sys::stat::Mode::S_IRWXO.bits();
+        stat.st_ino = 2;
+        assert_eq!(foo.name, OsString::from("foo.txt"));
+        assert_eq!(foo.metadata, Some(stat));
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }
