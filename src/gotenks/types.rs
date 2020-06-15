@@ -253,6 +253,10 @@ impl Inode {
         self.modified_at = Some(util::now() as _);
     }
 
+    pub fn update_accessed_at(&mut self) {
+        self.accessed_at = Some(util::now() as _);
+    }
+
     pub fn to_stat(&self, index: u32) -> FileStat {
         let mut stat = FileStat::new();
         stat.st_ino = index as _;

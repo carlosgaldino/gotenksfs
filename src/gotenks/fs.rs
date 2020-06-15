@@ -113,6 +113,25 @@ impl GotenksFS {
         Ok(inode)
     }
 
+    fn find_inode_from_path<P>(&self, path: P) -> fuse_rs::Result<(Inode, u32)>
+    where
+        P: AsRef<Path>,
+    {
+        match path.as_ref().parent() {
+            None => Ok((self.find_inode(ROOT_INODE)?, ROOT_INODE)),
+            Some(parent) => {
+                let (parent, _) = self.find_dir(parent)?;
+                let index = parent.entry(
+                    path.as_ref()
+                        .file_name()
+                        .ok_or(Errno::EINVAL)?
+                        .to_os_string(),
+                )?;
+                Ok((self.find_inode(index)?, index))
+            }
+        }
+    }
+
     fn find_dir<P>(&self, path: P) -> fuse_rs::Result<(Directory, u32)>
     where
         P: AsRef<Path>,
@@ -235,14 +254,8 @@ impl GotenksFS {
 
 impl fuse_rs::Filesystem for GotenksFS {
     fn metadata(&self, path: &Path) -> fuse_rs::Result<FileStat> {
-        match path.parent() {
-            None => Ok(self.find_inode(ROOT_INODE)?.to_stat(ROOT_INODE)),
-            Some(parent) => {
-                let (parent, _) = self.find_dir(parent)?;
-                let index = parent.entry(path.file_name().ok_or(Errno::EINVAL)?.to_os_string())?;
-                Ok(self.find_inode(index)?.to_stat(index))
-            }
-        }
+        let (inode, index) = self.find_inode_from_path(path)?;
+        Ok(inode.to_stat(index))
     }
 
     fn read_dir(
@@ -316,6 +329,21 @@ impl fuse_rs::Filesystem for GotenksFS {
         } else {
             Err(Errno::ENOENT)
         }
+    }
+
+    fn open(
+        &mut self,
+        path: &Path,
+        file_info: &mut fuse_rs::fs::OpenFileInfo,
+    ) -> fuse_rs::Result<()> {
+        // TODO: check permissions
+        let (mut inode, index) = self.find_inode_from_path(path)?;
+        inode.update_accessed_at();
+
+        self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
+        file_info.set_handle(index as u64);
+
+        Ok(())
     }
 
     fn init(&mut self, _connection_info: &mut fuse_rs::fs::ConnectionInfo) -> fuse_rs::Result<()> {
