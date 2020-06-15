@@ -55,12 +55,11 @@ impl GotenksFS {
         let mut inode = Inode::new();
         inode.mode = SFlag::S_IFDIR.bits() | 0o777;
         inode.hard_links = 2;
-        inode.direct_blocks[0] = 1;
 
         let dir = Directory::default();
 
         group.allocate_inode();
-        group.allocate_data_block();
+        inode.direct_blocks[0] = group.allocate_data_block() as u32;
         self.superblock_mut().free_inodes -= 1;
         self.superblock_mut().free_blocks -= 1;
         self.save_inode(inode, ROOT_INODE)?;
