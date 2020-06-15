@@ -207,6 +207,17 @@ pub struct Inode {
 }
 
 impl Inode {
+    pub fn new() -> Self {
+        let mut inode = Self::default();
+        let now = util::now();
+        inode.created_at = now;
+        inode.accessed_at = Some(now as i64);
+        inode.modified_at = Some(now as i64);
+        inode.changed_at = Some(now as i64);
+        inode.hard_links = 1;
+        inode
+    }
+
     #[allow(dead_code)]
     pub fn serialize(&mut self) -> anyhow::Result<Vec<u8>> {
         self.checksum();
@@ -234,8 +245,8 @@ impl Inode {
         (self.mode & libc::S_IFDIR) != 0
     }
 
-    pub fn update_accessed_at(&mut self) {
-        self.accessed_at = Some(util::now() as _);
+    pub fn update_modified_at(&mut self) {
+        self.modified_at = Some(util::now() as _);
     }
 
     pub fn to_stat(&self, index: u32) -> FileStat {

@@ -51,12 +51,9 @@ impl GotenksFS {
             return Ok(());
         }
 
-        let mut inode = Inode::default();
+        let mut inode = Inode::new();
         inode.mode = SFlag::S_IFDIR.bits() | 0o777;
         inode.hard_links = 2;
-        inode.created_at = util::now();
-        inode.modified_at = Some(inode.created_at as _);
-        inode.changed_at = inode.modified_at;
         inode.direct_blocks[0] = 1;
 
         let dir = Directory::default();
@@ -79,6 +76,10 @@ impl GotenksFS {
     }
 
     fn save_dir(&mut self, mut dir: Directory, index: u32) -> anyhow::Result<()> {
+        let mut inode = self.find_inode(index)?;
+        inode.update_modified_at();
+        self.save_inode(inode, index)?;
+
         let offset = self.data_block_seek_position(index);
         let buf = self.mmap_mut().as_mut();
         let mut cursor = Cursor::new(buf);
@@ -195,6 +196,7 @@ impl GotenksFS {
             .map(|(index, g)| (index, g.free_inodes()))
             .collect::<Vec<(usize, usize)>>();
 
+        // TODO: handle when group has run out of space
         groups.sort_by(|a, b| a.1.cmp(&b.1));
         let (group_index, _) = groups.first().unwrap();
         let group = self.groups_mut().get_mut(*group_index).unwrap();
@@ -269,7 +271,7 @@ impl fuse_rs::Filesystem for GotenksFS {
         file_info: &mut fuse_rs::fs::OpenFileInfo,
     ) -> fuse_rs::Result<()> {
         let index = self.allocate_inode();
-        let mut inode = Inode::default();
+        let mut inode = Inode::new();
         inode.mode = permissions.bits();
 
         let (mut parent, parent_index) = self.find_dir(path.parent().ok_or(Errno::EINVAL)?)?;
