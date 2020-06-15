@@ -452,7 +452,7 @@ mod tests {
     fn data_block_seek_position() {
         let mut fs = GotenksFS::default();
         let block_size = 1024;
-        fs.sb = Some(Superblock::new(block_size, 3));
+        fs.sb = Some(Superblock::new(block_size, 3, 0, 0));
         fs.superblock_mut().data_blocks_per_group = block_size * 8;
 
         let prefix = SUPERBLOCK_SIZE + 2 * block_size as u64 + block_size as u64 * INODE_SIZE * 8;
@@ -499,7 +499,7 @@ mod tests {
         let mut fs = GotenksFS::new(&tmp_file)?;
         let inode = fs.find_inode(ROOT_INODE)?;
 
-        assert_eq!(inode.accessed_at, None);
+        assert_ne!(inode.accessed_at, None);
 
         let file_info = fuse_rs::fs::FileInfo::default();
         let entries = fs.read_dir(Path::new("/"), 0, file_info)?;
@@ -522,17 +522,21 @@ mod tests {
 
         let bar = entries.first().unwrap();
         let mut stat = FileStat::default();
-        stat.st_mode = nix::sys::stat::Mode::S_IRWXU.bits();
+        let mode = nix::sys::stat::Mode::S_IRWXU.bits();
+        stat.st_mode = mode;
         stat.st_ino = 3;
         assert_eq!(bar.name, OsString::from("bar.txt"));
-        assert_eq!(bar.metadata, Some(stat));
+        assert_eq!(bar.metadata.as_ref().unwrap().st_ino, 3);
+        assert_eq!(bar.metadata.as_ref().unwrap().st_mode, mode);
 
         let foo = entries.last().unwrap();
         let mut stat = FileStat::default();
-        stat.st_mode = nix::sys::stat::Mode::S_IRWXO.bits();
+        let mode = nix::sys::stat::Mode::S_IRWXO.bits();
+        stat.st_mode = mode;
         stat.st_ino = 2;
         assert_eq!(foo.name, OsString::from("foo.txt"));
-        assert_eq!(foo.metadata, Some(stat));
+        assert_eq!(foo.metadata.as_ref().unwrap().st_ino, 2);
+        assert_eq!(foo.metadata.as_ref().unwrap().st_mode, mode);
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }
