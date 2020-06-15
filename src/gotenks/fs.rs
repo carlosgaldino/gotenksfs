@@ -6,7 +6,10 @@ use fs::OpenOptions;
 use fuse_rs::fs::FileStat;
 use io::{Cursor, SeekFrom};
 use memmap::MmapMut;
-use nix::{errno::Errno, sys::stat::SFlag};
+use nix::{
+    errno::Errno,
+    sys::stat::{Mode, SFlag},
+};
 use std::{
     fs,
     io::{self, prelude::*},
@@ -267,12 +270,14 @@ impl fuse_rs::Filesystem for GotenksFS {
     fn create(
         &mut self,
         path: &Path,
-        permissions: nix::sys::stat::Mode,
+        permissions: Mode,
         file_info: &mut fuse_rs::fs::OpenFileInfo,
     ) -> fuse_rs::Result<()> {
         let index = self.allocate_inode();
         let mut inode = Inode::new();
         inode.mode = permissions.bits();
+        inode.user_id = self.superblock().uid;
+        inode.group_id = self.superblock().gid;
 
         let (mut parent, parent_index) = self.find_dir(path.parent().ok_or(Errno::EINVAL)?)?;
         parent.entries.insert(
@@ -351,7 +356,7 @@ mod tests {
     #[test]
     fn inode_offsets() {
         let mut fs = GotenksFS::default();
-        fs.sb = Some(Superblock::new(1024, 3));
+        fs.sb = Some(Superblock::new(1024, 3, 0, 0));
         fs.superblock_mut().data_blocks_per_group = 1024 * 8;
 
         let (group_index, offset) = fs.inode_offsets(1);
@@ -374,7 +379,7 @@ mod tests {
     #[test]
     fn inode_seek_position() {
         let mut fs = GotenksFS::default();
-        fs.sb = Some(Superblock::new(1024, 3));
+        fs.sb = Some(Superblock::new(1024, 3, 0, 0));
         fs.superblock_mut().data_blocks_per_group = 1024 * 8;
 
         let offset = fs.inode_seek_position(1);

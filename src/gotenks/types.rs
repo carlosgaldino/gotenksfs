@@ -24,15 +24,19 @@ pub struct Superblock {
     pub free_inodes: u32,
     pub groups: u32,
     pub data_blocks_per_group: u32,
+    pub uid: u32,
+    pub gid: u32,
     pub checksum: u32,
 }
 
 impl Superblock {
-    pub fn new(block_size: u32, groups: u32) -> Self {
+    pub fn new(block_size: u32, groups: u32, uid: u32, gid: u32) -> Self {
         let total_blocks = block_size * 8 * groups;
         Self {
             block_size,
             groups,
+            uid,
+            gid,
             magic: GOTENKS_MAGIC,
             created_at: util::now(),
             modified_at: None,
@@ -258,6 +262,8 @@ impl Inode {
         stat.st_mtime = self.modified_at.unwrap_or(0);
         stat.st_ctime = self.changed_at.unwrap_or(0);
         stat.st_birthtime = self.created_at as _;
+        stat.st_uid = self.user_id;
+        stat.st_gid = self.group_id;
 
         stat
     }
@@ -337,7 +343,7 @@ mod tests {
 
     #[test]
     fn superblock_new() {
-        let sb = Superblock::new(1024, 3);
+        let sb = Superblock::new(1024, 3, 0, 0);
         assert_eq!(sb.free_inodes, 8192 * 3);
         assert_eq!(sb.free_blocks, 8192 * 3);
         assert_eq!(sb.data_blocks_per_group, 1024 * 8);
@@ -345,7 +351,7 @@ mod tests {
 
     #[test]
     fn superblock_checksum() -> anyhow::Result<()> {
-        let mut sb = Superblock::new(1024, 3);
+        let mut sb = Superblock::new(1024, 3, 0, 0);
         let buf = <Superblock>::serialize(&mut sb)?;
         let mut deserialised_sb = Superblock::deserialize_from(buf.as_slice())?;
         assert_ne!(deserialised_sb.checksum, 0);

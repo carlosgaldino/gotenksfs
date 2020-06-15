@@ -24,7 +24,9 @@ where
     let groups = (file_size as f64 / bg_size as f64).ceil();
     let file = OpenOptions::new().write(true).create_new(true).open(path)?;
     let mut buf = BufWriter::new(&file);
-    let mut sb = Superblock::new(blk_size, groups as _);
+    let uid = nix::unistd::geteuid().as_raw();
+    let gid = nix::unistd::getegid().as_raw();
+    let mut sb = Superblock::new(blk_size, groups as _, uid, gid);
 
     sb.serialize_into(&mut buf)?;
 
