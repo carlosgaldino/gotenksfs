@@ -103,8 +103,8 @@ impl Superblock {
 pub struct Group {
     pub data_bitmap: BitVec<Lsb0, u8>,
     pub inode_bitmap: BitVec<Lsb0, u8>,
-    next_inode: usize,
-    next_data_block: usize,
+    next_inode: Option<usize>,
+    next_data_block: Option<usize>,
 }
 
 impl Group {
@@ -142,17 +142,22 @@ impl Group {
             let data_bitmap = BitVec::<Lsb0, u8>::from_slice(&buf);
             r.read_exact(&mut buf)?;
             let inode_bitmap = BitVec::<Lsb0, u8>::from_slice(&buf);
-            let next_inode = inode_bitmap.split(|_p, bit| !*bit).next().unwrap().len() + 1;
-            let next_data_block = data_bitmap.split(|_p, bit| !*bit).next().unwrap().len() + 1;
-            groups.push(Group {
-                data_bitmap,
-                inode_bitmap,
-                next_inode,
-                next_data_block,
-            });
+            groups.push(Group::new(data_bitmap, inode_bitmap));
         }
 
         Ok(groups)
+    }
+
+    pub fn new(data_bitmap: BitVec<Lsb0, u8>, inode_bitmap: BitVec<Lsb0, u8>) -> Self {
+        let mut group = Group {
+            data_bitmap,
+            inode_bitmap,
+            ..Default::default()
+        };
+        group.next_data_block = group.next_free_data_block();
+        group.next_inode = group.next_free_inode();
+
+        group
     }
 
     pub fn has_inode(&self, i: usize) -> bool {
@@ -171,18 +176,25 @@ impl Group {
         self.data_bitmap.count_zeros()
     }
 
-    pub fn allocate_inode(&mut self) -> usize {
-        self.add_inode(self.next_inode);
-        let index = self.next_inode;
-        self.next_inode += 1;
-        index
+    pub fn allocate_inode(&mut self) -> Option<usize> {
+        self.next_inode.and_then(|index| {
+            self.add_inode(index);
+            self.next_inode = self.next_free_inode();
+            Some(index)
+        })
     }
 
-    pub fn allocate_data_block(&mut self) -> usize {
-        self.add_data_block(self.next_data_block);
-        let index = self.next_data_block;
-        self.next_data_block += 1;
-        index
+    pub fn allocate_data_block(&mut self) -> Option<usize> {
+        self.next_data_block.and_then(|index| {
+            self.add_data_block(index);
+            self.next_data_block = self.next_free_data_block();
+            Some(index)
+        })
+    }
+
+    pub fn release_data_block(&mut self, index: usize) {
+        self.data_bitmap.set(index - 1, false);
+        self.next_data_block = self.next_free_data_block();
     }
 
     fn add_inode(&mut self, i: usize) {
@@ -191,6 +203,20 @@ impl Group {
 
     fn add_data_block(&mut self, i: usize) {
         self.data_bitmap.set(i - 1, true);
+    }
+
+    fn next_free_data_block(&self) -> Option<usize> {
+        self.data_bitmap
+            .iter()
+            .position(|bit| !*bit)
+            .and_then(|p| Some(p + 1))
+    }
+
+    fn next_free_inode(&self) -> Option<usize> {
+        self.inode_bitmap
+            .iter()
+            .position(|bit| !*bit)
+            .and_then(|p| Some(p + 1))
     }
 }
 
@@ -250,7 +276,9 @@ impl Inode {
     }
 
     pub fn update_modified_at(&mut self) {
-        self.modified_at = Some(util::now() as _);
+        let now = util::now();
+        self.changed_at = Some(now as _);
+        self.modified_at = Some(now as _);
     }
 
     pub fn update_accessed_at(&mut self) {
@@ -266,10 +294,52 @@ impl Inode {
         stat.st_mtime = self.modified_at.unwrap_or(0);
         stat.st_ctime = self.changed_at.unwrap_or(0);
         stat.st_birthtime = self.created_at as _;
+        stat.st_size = self.size as i64;
+        stat.st_blocks = self.block_count as i64;
         stat.st_uid = self.user_id;
         stat.st_gid = self.group_id;
 
         stat
+    }
+
+    pub fn truncate(&mut self) -> Vec<u32> {
+        self.update_modified_at();
+        self.size = 0;
+        self.block_count = 0;
+        let blocks = self
+            .direct_blocks
+            .iter()
+            .filter_map(|x| if *x != 0 { Some(*x) } else { None })
+            .collect::<Vec<u32>>();
+        self.direct_blocks = [0u32; 12];
+        blocks
+    }
+
+    pub fn next_block(&self, offset: u64, blk_size: u64) -> Option<(u32, u32)> {
+        let index = (offset / blk_size) as usize;
+
+        let b = self.direct_blocks[index];
+        if b == 0 {
+            None
+        } else {
+            let space_left = (index + 1) as u64 * blk_size - offset;
+
+            Some((b, space_left as u32))
+        }
+    }
+
+    pub fn add_block(&mut self, block: u32, index: usize) {
+        self.direct_blocks[index] = block;
+    }
+
+    pub fn adjust_size(&mut self, len: u64) {
+        self.size = self.size.max(len);
+        self.block_count = self.size / 512 + 1;
+    }
+
+    pub fn increment_size(&mut self, len: u64) {
+        self.size += len;
+        self.block_count = self.size / 512 + 1;
     }
 
     fn checksum(&mut self) {
@@ -403,27 +473,39 @@ mod tests {
     }
 
     #[test]
+    fn inode_truncate() {
+        let mut inode = Inode::new();
+        inode.size = 512;
+        inode.block_count = 1;
+        inode.direct_blocks[0] = 23;
+        assert!(!inode.direct_blocks.iter().all(|x| *x == 0));
+
+        inode.truncate();
+        assert_eq!(inode.size, 0);
+        assert_eq!(inode.block_count, 0);
+        assert!(inode.direct_blocks.iter().all(|x| *x == 0));
+    }
+
+    #[test]
     fn group_has_inode() {
         let mut bitmap = BitVec::<Lsb0, u8>::with_capacity(1024);
         bitmap.resize(1024, false);
 
-        let mut group = Group::default();
-        group.inode_bitmap = bitmap;
-        group.next_inode = 1;
+        let mut group = Group::new(bitmap.clone(), bitmap);
 
         assert!(!group.has_inode(1));
 
-        let index = group.allocate_inode();
+        let index = group.allocate_inode().unwrap();
         assert_eq!(index, 1);
         assert!(group.has_inode(index));
         assert!(group.inode_bitmap[index - 1]);
-        assert_eq!(group.next_inode, index + 1);
+        assert_eq!(group.next_inode, Some(index + 1));
 
-        let index = group.allocate_inode();
+        let index = group.allocate_inode().unwrap();
         assert_eq!(index, 2);
         assert!(group.has_inode(index));
         assert!(group.inode_bitmap[index - 1]);
-        assert_eq!(group.next_inode, index + 1);
+        assert_eq!(group.next_inode, Some(index + 1));
     }
 
     #[test]
@@ -431,23 +513,48 @@ mod tests {
         let mut bitmap = BitVec::<Lsb0, u8>::with_capacity(1024);
         bitmap.resize(1024, false);
 
-        let mut group = Group::default();
-        group.data_bitmap = bitmap;
-        group.next_data_block = 1;
+        let mut group = Group::new(bitmap.clone(), bitmap);
 
         assert!(!group.has_data_block(1));
 
-        let index = group.allocate_data_block();
+        let index = group.allocate_data_block().unwrap();
         assert_eq!(index, 1);
         assert!(group.has_data_block(index));
         assert!(group.data_bitmap[index - 1]);
-        assert_eq!(group.next_data_block, index + 1);
+        assert_eq!(group.next_data_block, Some(index + 1));
 
-        let index = group.allocate_data_block();
+        let index = group.allocate_data_block().unwrap();
         assert_eq!(index, 2);
         assert!(group.has_data_block(index));
         assert!(group.data_bitmap[index - 1]);
-        assert_eq!(group.next_data_block, index + 1);
+        assert_eq!(group.next_data_block, Some(index + 1));
+    }
+
+    #[test]
+    fn group_release_data_block() {
+        let mut bitmap = BitVec::<Lsb0, u8>::with_capacity(1024);
+        bitmap.resize(1024, false);
+
+        let mut group = Group::new(bitmap.clone(), bitmap);
+
+        assert_eq!(group.next_data_block.unwrap(), 1);
+        for i in 0..3 {
+            let index = group.allocate_data_block().unwrap();
+            assert_eq!(index, i + 1);
+        }
+        for i in 0..3 {
+            assert!(group.has_data_block(i + 1));
+        }
+        assert_eq!(group.next_data_block, Some(4));
+
+        group.release_data_block(1);
+        group.release_data_block(2);
+
+        assert_eq!(group.next_data_block, Some(1));
+
+        let index = group.allocate_data_block().unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(group.next_data_block, Some(2));
     }
 
     #[test]
@@ -462,12 +569,7 @@ mod tests {
             let iter = std::iter::successors(Some(i + 1 & 1), |n| Some(n ^ 1));
             let mut ib = BitVec::new();
             ib.extend(iter.take(64).map(|n| n != 0));
-            groups.push(Group {
-                data_bitmap: db,
-                inode_bitmap: ib,
-                next_inode: 1,
-                next_data_block: 1,
-            });
+            groups.push(Group::new(db, ib));
         }
 
         let buf = vec![0u8; SUPERBLOCK_SIZE as usize + block_group_size as usize * 3];
@@ -483,11 +585,11 @@ mod tests {
             };
             let vec = std::iter::repeat(bitmap).take(8).collect::<Vec<u8>>();
             assert_eq!(g.data_bitmap.into_vec(), vec);
-            assert_eq!(g.next_data_block, next_data_block);
+            assert_eq!(g.next_data_block, Some(next_data_block));
 
             let vec = std::iter::repeat(!bitmap).take(8).collect::<Vec<u8>>();
             assert_eq!(g.inode_bitmap.into_vec(), vec);
-            assert_eq!(g.next_inode, next_inode);
+            assert_eq!(g.next_inode, Some(next_inode));
         }
 
         Ok(())
