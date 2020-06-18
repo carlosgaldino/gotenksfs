@@ -315,21 +315,28 @@ impl Inode {
         blocks
     }
 
-    pub fn next_block(&self, offset: u64, blk_size: u64) -> Option<(u32, u32)> {
+    pub fn next_block(&self, offset: u64, blk_size: u64) -> anyhow::Result<Option<(u32, u32)>> {
         let index = (offset / blk_size) as usize;
+
+        if index >= self.direct_blocks.len() {
+            return Err(anyhow!("No space in direct blocks"));
+        }
 
         let b = self.direct_blocks[index];
         if b == 0 {
-            None
+            Ok(None)
         } else {
             let space_left = (index + 1) as u64 * blk_size - offset;
-
-            Some((b, space_left as u32))
+            Ok(Some((b, space_left as u32)))
         }
     }
 
-    pub fn add_block(&mut self, block: u32, index: usize) {
+    pub fn add_block(&mut self, block: u32, index: usize) -> anyhow::Result<()> {
+        if index >= self.direct_blocks.len() {
+            return Err(anyhow!("No space in direct blocks"));
+        }
         self.direct_blocks[index] = block;
+        Ok(())
     }
 
     pub fn adjust_size(&mut self, len: u64) {

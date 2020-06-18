@@ -71,7 +71,7 @@ impl GotenksFS {
             self.allocate_data_block()
                 .ok_or_else(|| anyhow!("No space left for data"))?,
             0,
-        );
+        )?;
         self.save_inode(inode, index)?;
         self.save_dir(dir, index)
     }
@@ -412,7 +412,10 @@ impl fuse_rs::Filesystem for GotenksFS {
 
         while total_wrote != buf.len() {
             let direct_block_index = offset / blk_size as u64;
-            let (block_index, space_left) = match inode.next_block(offset, blk_size as u64) {
+            let (block_index, space_left) = match inode
+                .next_block(offset, blk_size as u64)
+                .map_err(|_| Errno::ENOSPC)?
+            {
                 None => {
                     let block_index = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
                     (block_index, blk_size)
@@ -434,7 +437,9 @@ impl fuse_rs::Filesystem for GotenksFS {
                 )
                 .map_err(|_| Errno::EIO)?;
 
-            inode.add_block(block_index, direct_block_index as usize);
+            inode
+                .add_block(block_index, direct_block_index as usize)
+                .map_err(|_| Errno::ENOSPC)?;
             total_wrote += wrote;
             offset += wrote as u64;
         }
