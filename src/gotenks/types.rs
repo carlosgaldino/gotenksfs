@@ -226,13 +226,15 @@ pub struct Inode {
     pub hard_links: u16,
     pub user_id: libc::uid_t,
     pub group_id: libc::gid_t,
-    pub block_count: u64, // should be in 512 bytes blocks
+    pub block_count: u32, // should be in 512 bytes blocks
     pub size: u64,
     pub created_at: u64,
     pub accessed_at: Option<i64>,
     pub modified_at: Option<i64>,
     pub changed_at: Option<i64>,
     pub direct_blocks: [u32; 12],
+    pub indirect_block: u32,
+    pub double_indirect_block: u32,
     pub checksum: u32,
 }
 
@@ -315,20 +317,8 @@ impl Inode {
         blocks
     }
 
-    pub fn next_block(&self, offset: u64, blk_size: u64) -> anyhow::Result<Option<(u32, u32)>> {
-        let index = (offset / blk_size) as usize;
-
-        if index >= self.direct_blocks.len() {
-            return Err(anyhow!("No space in direct blocks"));
-        }
-
-        let b = self.direct_blocks[index];
-        if b == 0 {
-            Ok(None)
-        } else {
-            let space_left = (index + 1) as u64 * blk_size - offset;
-            Ok(Some((b, space_left as u32)))
-        }
+    pub fn find_direct_block(&self, index: usize) -> u32 {
+        self.direct_blocks[index]
     }
 
     pub fn add_block(&mut self, block: u32, index: usize) -> anyhow::Result<()> {
@@ -341,12 +331,12 @@ impl Inode {
 
     pub fn adjust_size(&mut self, len: u64) {
         self.size = self.size.max(len);
-        self.block_count = self.size / 512 + 1;
+        self.block_count = self.size as u32 / 512 + 1;
     }
 
     pub fn increment_size(&mut self, len: u64) {
         self.size += len;
-        self.block_count = self.size / 512 + 1;
+        self.block_count = self.size as u32 / 512 + 1;
     }
 
     fn checksum(&mut self) {

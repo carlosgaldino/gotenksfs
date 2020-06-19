@@ -81,6 +81,7 @@ impl GotenksFS {
         let buf = self.mmap_mut().as_mut();
         let mut cursor = Cursor::new(buf);
         cursor.seek(SeekFrom::Start(offset))?;
+        assert_ne!(cursor.position(), 4257010);
 
         Ok(inode.serialize_into(&mut cursor)?)
     }
@@ -95,6 +96,7 @@ impl GotenksFS {
         let mut cursor = Cursor::new(buf);
         cursor.seek(SeekFrom::Start(offset))?;
 
+        assert_ne!(cursor.position(), 4257010);
         Ok(dir.serialize_into(&mut cursor)?)
     }
 
@@ -179,6 +181,149 @@ impl GotenksFS {
         Directory::deserialize_from(cursor).map_err(|_| Errno::EIO)
     }
 
+    fn find_data_block(
+        &mut self,
+        inode: &mut Inode,
+        offset: u64,
+        read: bool,
+    ) -> fuse_rs::Result<(u32, u32)> {
+        let blk_size = self.superblock().block_size as u64;
+        let index = offset / blk_size;
+
+        if read {
+        } else if offset == 8388608 {
+        }
+
+        let pointers_per_block = self.superblock().block_size as u64 / 4;
+
+        let block = if index < 12 {
+            inode.find_direct_block(index as usize)
+        } else if index < (pointers_per_block + 12) {
+            self.find_indirect(inode.indirect_block, index - 12, offset, 0, read)
+                .map_err(|_| Errno::EIO)?
+        } else if index < (pointers_per_block * pointers_per_block + pointers_per_block + 12) {
+            self.find_indirect(inode.double_indirect_block, index - 12, offset, 0, read)
+                .map_err(|_| Errno::EIO)?
+        } else {
+            unimplemented!("finding triple indirect block");
+        };
+
+        if block != 0 {
+            return Ok((block, ((index + 1) * blk_size - offset) as u32));
+        }
+
+        if read {
+            return Err(Errno::ENOSPC);
+        }
+
+        let mut block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
+        if index < 12 {
+            inode
+                .add_block(block, index as usize)
+                .map_err(|_| Errno::ENOSPC)?;
+        } else if index < (pointers_per_block + 12) {
+            if inode.indirect_block == 0 {
+                inode.indirect_block = block;
+                self.write_data(&vec![0u8; blk_size as usize], 0, block)
+                    .map_err(|_| Errno::EIO)?;
+                block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
+            }
+
+            self.save_indirect(inode.indirect_block, block, index - 12)
+                .map_err(|_| Errno::EIO)?;
+        } else if index < (pointers_per_block * pointers_per_block + pointers_per_block + 12) {
+            if inode.double_indirect_block == 0 {
+                inode.double_indirect_block = block;
+                self.write_data(&vec![0u8; blk_size as usize], 0, block)
+                    .map_err(|_| Errno::EIO)?;
+                block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
+            }
+
+            let indirect_offset = (index - 12) / pointers_per_block - 1;
+            let indirect_block = match self
+                .find_indirect(inode.double_indirect_block, indirect_offset, 0, 0, read)
+                .map_err(|_| Errno::EIO)?
+            {
+                0 => {
+                    let indirect_block = block;
+                    self.save_indirect(inode.double_indirect_block, block, indirect_offset)
+                        .map_err(|_| Errno::EIO)?;
+                    block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
+                    indirect_block
+                }
+                indirect_block => indirect_block,
+            };
+
+            self.save_indirect(
+                indirect_block,
+                block,
+                (index - 12) & (pointers_per_block - 1),
+            )
+            .map_err(|_| Errno::EIO)?;
+        } else {
+            unreachable!("shouldn't need triple pointers");
+        }
+
+        Ok((block, blk_size as u32))
+    }
+
+    fn find_indirect(
+        &self,
+        pointer: u32,
+        index: u64,
+        offset: u64,
+        call: u64,
+        read: bool,
+    ) -> anyhow::Result<u32> {
+        if pointer == 0 {
+            return Ok(pointer);
+        }
+
+        let pointers_per_block = self.superblock().block_size as u64 / 4;
+        let mut block = 0;
+
+        if index < pointers_per_block {
+            let off = index & (pointers_per_block - 1);
+            let mut data = [0u8; 4];
+            self.read_data(&mut data, off * 4, pointer)?;
+            block = u32::from_le_bytes(data);
+        } else {
+            let off = index / pointers_per_block - 1;
+            let mut data = [0u8; 4];
+            self.read_data(&mut data, off * 4, pointer)?;
+            block = u32::from_le_bytes(data);
+        }
+
+        if block == 0 || index < pointers_per_block {
+            return Ok(block);
+        }
+
+        self.find_indirect(
+            block,
+            index & (pointers_per_block - 1),
+            offset,
+            call + 1,
+            read,
+        )
+    }
+
+    fn save_indirect(&mut self, pointer: u32, block: u32, index: u64) -> anyhow::Result<()> {
+        assert_ne!(pointer, 0);
+        let pointers_per_block = self.superblock().block_size as u64 / 4;
+        let offset = index & (pointers_per_block - 1);
+
+        if index < pointers_per_block {
+            self.write_data(&block.to_le_bytes(), offset * 4, pointer)
+                .map(|_| ())
+        } else {
+            let indirect_offset = index / pointers_per_block - 1;
+            let mut data = [0u8; 4];
+            self.read_data(&mut data, indirect_offset * 4, pointer)?;
+            let new_pointer = u32::from_le_bytes(data);
+            self.save_indirect(new_pointer, block, offset)
+        }
+    }
+
     // (group_block_index, bitmap_index)
     fn inode_offsets(&self, index: u32) -> (u32, u32) {
         let inodes_per_group = self.superblock().data_blocks_per_group;
@@ -207,14 +352,15 @@ impl GotenksFS {
 
     fn data_block_seek_position(&self, index: u32) -> u64 {
         let (group_index, block_index) = self.data_block_offsets(index);
-        let block_size = self.superblock().block_size;
-        let seek_pos = group_index * util::block_group_size(block_size)
-            + 2 * block_size
-            + self.superblock().data_blocks_per_group * INODE_SIZE as u32
-            + SUPERBLOCK_SIZE as u32
-            + block_size * block_index;
 
-        seek_pos as u64
+        let block_size = self.superblock().block_size as u64;
+        let seek_pos = group_index as u64 * util::block_group_size(block_size as u32) as u64
+            + 2 * block_size
+            + self.superblock().data_blocks_per_group as u64 * INODE_SIZE
+            + SUPERBLOCK_SIZE
+            + block_size * block_index as u64;
+
+        seek_pos
     }
 
     fn allocate_inode(&mut self) -> Option<u32> {
@@ -240,12 +386,16 @@ impl GotenksFS {
             .groups()
             .iter()
             .enumerate()
-            .map(|(index, g)| (index, g.free_inodes()))
+            .map(|(index, g)| (index, g.free_data_blocks()))
             .collect::<Vec<(usize, usize)>>();
 
         // TODO: handle when group has run out of space
         groups.sort_by(|a, b| a.1.cmp(&b.1));
-        let (group_index, _) = groups.first().unwrap();
+        let (group_index, v) = groups
+            .iter()
+            .filter(|g| g.1 != 0)
+            .collect::<Vec<&(_, _)>>()
+            .first()?;
         self.superblock_mut().free_blocks -= 1;
         let group = self.groups_mut().get_mut(*group_index).unwrap();
 
@@ -266,11 +416,24 @@ impl GotenksFS {
 
     fn write_data(&mut self, data: &[u8], offset: u64, block_index: u32) -> anyhow::Result<usize> {
         let block_offset = self.data_block_seek_position(block_index);
+
         let buf = self.mmap_mut().as_mut();
         let mut cursor = Cursor::new(buf);
         cursor.seek(SeekFrom::Start(block_offset + offset))?;
-
         Ok(cursor.write(data)?)
+    }
+
+    fn read_data(&self, data: &mut [u8], offset: u64, block_index: u32) -> anyhow::Result<usize> {
+        let block_offset = self.data_block_seek_position(block_index);
+        let buf = self.mmap().as_ref();
+        let mut cursor = Cursor::new(buf);
+        cursor.seek(SeekFrom::Start(block_offset + offset))?;
+
+        cursor.read_exact(data)?;
+
+        if cursor.position() == 12608512 {}
+
+        Ok(data.len())
     }
 
     fn groups(&self) -> &[Group] {
@@ -333,7 +496,7 @@ impl fuse_rs::Filesystem for GotenksFS {
         permissions: Mode,
         file_info: &mut fuse_rs::fs::OpenFileInfo,
     ) -> fuse_rs::Result<()> {
-        let index = self.allocate_inode().ok_or_else(|| Errno::ENOSPC)?;
+        let index = self.allocate_inode().ok_or_else(|| Errno::ECONNREFUSED)?;
         let mut inode = Inode::new();
         inode.mode = permissions.bits();
         inode.user_id = self.superblock().uid;
@@ -412,16 +575,7 @@ impl fuse_rs::Filesystem for GotenksFS {
 
         while total_wrote != buf.len() {
             let direct_block_index = offset / blk_size as u64;
-            let (block_index, space_left) = match inode
-                .next_block(offset, blk_size as u64)
-                .map_err(|_| Errno::ENOSPC)?
-            {
-                None => {
-                    let block_index = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
-                    (block_index, blk_size)
-                }
-                Some(x) => x,
-            };
+            let (block_index, space_left) = self.find_data_block(&mut inode, offset, false)?;
 
             let max_write_len = buf.len().min(space_left as usize);
             let offset_in_block = if total_wrote != 0 {
@@ -437,9 +591,6 @@ impl fuse_rs::Filesystem for GotenksFS {
                 )
                 .map_err(|_| Errno::EIO)?;
 
-            inode
-                .add_block(block_index, direct_block_index as usize)
-                .map_err(|_| Errno::ENOSPC)?;
             total_wrote += wrote;
             offset += wrote as u64;
         }
@@ -453,6 +604,55 @@ impl fuse_rs::Filesystem for GotenksFS {
         self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
         self.mmap_mut().flush().map_err(|_| Errno::EIO)?;
         Ok(total_wrote)
+    }
+
+    fn read(
+        &mut self,
+        _path: &Path,
+        buf: &mut [u8],
+        offset: u64,
+        file_info: fuse_rs::fs::FileInfo,
+    ) -> fuse_rs::Result<usize> {
+        let index = file_info.handle().ok_or(Errno::EINVAL)? as u32;
+        if index == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let mut inode = self.find_inode(index)?;
+        let mut total_read: usize = 0;
+        let mut offset = offset;
+        let blk_size = self.superblock().block_size;
+
+        let mut iter = 0;
+        let should_read = buf.len().min(inode.size as usize);
+        while total_read != should_read as usize {
+            iter += 1;
+            let direct_block_index = offset / blk_size as u64;
+            let (block_index, space_left) = self.find_data_block(&mut inode, offset, true)?;
+
+            let max_read_len = buf.len().min(space_left as usize);
+            let max_read_len = buf.len().min(max_read_len + total_read);
+            let offset_in_block = if total_read != 0 {
+                0
+            } else {
+                offset - direct_block_index * blk_size as u64
+            };
+
+            let read = self
+                .read_data(
+                    &mut buf[total_read..max_read_len],
+                    offset_in_block,
+                    block_index,
+                )
+                .map_err(|_| Errno::EIO)?;
+
+            total_read += read;
+            offset += read as u64;
+        }
+
+        inode.update_accessed_at();
+        self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
+
+        Ok(total_read)
     }
 
     fn ftruncate(
@@ -488,6 +688,12 @@ impl fuse_rs::Filesystem for GotenksFS {
         Ok(inode.to_stat(index))
     }
 
+    fn set_permissions(&mut self, path: &Path, mode: Mode) -> fuse_rs::Result<()> {
+        let (mut inode, index) = self.find_inode_from_path(path)?;
+        inode.mode |= mode.bits();
+        self.save_inode(inode, index).map_err(|_| Errno::EIO)
+    }
+
     fn init(&mut self, _connection_info: &mut fuse_rs::fs::ConnectionInfo) -> fuse_rs::Result<()> {
         let sb = self.superblock_mut();
         sb.update_last_mounted_at();
@@ -501,6 +707,7 @@ impl fuse_rs::Filesystem for GotenksFS {
         let buf = mmap.as_mut();
         let mut cursor = Cursor::new(buf);
 
+        assert_ne!(cursor.position(), 4257010);
         self.superblock_mut()
             .serialize_into(&mut cursor)
             .map_err(|_| Errno::EIO)?;
@@ -748,10 +955,11 @@ mod tests {
             nix::sys::stat::Mode::S_IRWXU,
             &mut open_fi,
         )?;
+        let handle = open_fi.handle().unwrap();
 
         fs.open(Path::new("/bar.txt"), &mut open_fi)?;
         let mut file_info = fuse_rs::fs::FileInfo::default();
-        file_info.set_handle(open_fi.handle().unwrap());
+        file_info.set_handle(handle);
 
         let mut write_file_info = fuse_rs::fs::WriteFileInfo::from_file_info(file_info);
         let buf = std::iter::repeat(3).take(125).collect::<Vec<u8>>();
@@ -763,6 +971,8 @@ mod tests {
         assert_eq!(stat.st_size, 125);
         assert_eq!(stat.st_blocks, 1);
 
+        assert_eq!(read(&mut fs, 125, 0, handle)?, buf);
+
         // Overwriting with larger buffer
         let buf = std::iter::repeat(4).take(126).collect::<Vec<u8>>();
         let wrote = fs.write(Path::new("/ignored.txt"), &buf, 0, &mut write_file_info)?;
@@ -771,6 +981,8 @@ mod tests {
         let stat = fs.metadata(Path::new("/bar.txt"))?;
         assert_eq!(stat.st_size, 126);
         assert_eq!(stat.st_blocks, 1); // 126 / 512 + 1
+
+        assert_eq!(read(&mut fs, 126, 0, handle)?, buf);
 
         let inode = fs.find_inode(2)?;
         assert_eq!(inode.direct_blocks[0], 2);
@@ -786,6 +998,12 @@ mod tests {
         let stat = fs.metadata(Path::new("/bar.txt"))?;
         assert_eq!(stat.st_size, 126);
         assert_eq!(stat.st_blocks, 1); // 126 / 512 + 1
+
+        assert_eq!(read(&mut fs, 120, 0, handle)?, buf);
+        assert_eq!(
+            read(&mut fs, 6, 120, handle)?,
+            std::iter::repeat(4).take(6).collect::<Vec<u8>>()
+        );
 
         let inode = fs.find_inode(2)?;
         assert_eq!(inode.direct_blocks[0], 2);
@@ -803,6 +1021,16 @@ mod tests {
         assert_eq!(inode.direct_blocks[0], 2);
         assert_eq!(inode.direct_blocks[1], 3);
 
+        assert_eq!(
+            read(&mut fs, 120, 0, handle)?,
+            std::iter::repeat(5).take(120).collect::<Vec<u8>>()
+        );
+        assert_eq!(
+            read(&mut fs, 6, 120, handle)?,
+            std::iter::repeat(4).take(6).collect::<Vec<u8>>()
+        );
+        assert_eq!(read(&mut fs, 125, 126, handle)?, buf);
+
         // Appending again
         let buf = std::iter::repeat(8).take(125).collect::<Vec<u8>>();
         let wrote = fs.write(Path::new("/ignored.txt"), &buf, 251, &mut write_file_info)?;
@@ -816,6 +1044,20 @@ mod tests {
         assert_eq!(inode.direct_blocks[0], 2);
         assert_eq!(inode.direct_blocks[1], 3);
         assert_eq!(inode.direct_blocks[2], 4);
+
+        assert_eq!(
+            read(&mut fs, 120, 0, handle)?,
+            std::iter::repeat(5).take(120).collect::<Vec<u8>>()
+        );
+        assert_eq!(
+            read(&mut fs, 6, 120, handle)?,
+            std::iter::repeat(4).take(6).collect::<Vec<u8>>()
+        );
+        assert_eq!(
+            read(&mut fs, 125, 126, handle)?,
+            std::iter::repeat(7).take(125).collect::<Vec<u8>>()
+        );
+        assert_eq!(read(&mut fs, 125, 251, handle)?, buf);
 
         std::thread::sleep(std::time::Duration::from_secs(1));
 
@@ -838,6 +1080,20 @@ mod tests {
 
         assert_eq!(fs.superblock().free_blocks, BLOCK_SIZE * 8 - 4);
 
+        assert_eq!(
+            read(&mut fs, 120, 0, handle)?,
+            std::iter::repeat(5).take(120).collect::<Vec<u8>>()
+        );
+        assert_eq!(
+            read(&mut fs, 6, 120, handle)?,
+            std::iter::repeat(4).take(6).collect::<Vec<u8>>()
+        );
+        assert_eq!(read(&mut fs, 125, 126, handle)?, buf);
+        assert_eq!(
+            read(&mut fs, 125, 251, handle)?,
+            std::iter::repeat(8).take(125).collect::<Vec<u8>>()
+        );
+
         Ok(std::fs::remove_file(&tmp_file)?)
     }
 
@@ -854,8 +1110,9 @@ mod tests {
         )?;
 
         fs.open(Path::new("/bar.txt"), &mut open_fi)?;
+        let handle = open_fi.handle().unwrap();
         let mut file_info = fuse_rs::fs::FileInfo::default();
-        file_info.set_handle(open_fi.handle().unwrap());
+        file_info.set_handle(handle);
 
         let mut write_file_info = fuse_rs::fs::WriteFileInfo::from_file_info(file_info);
         let buf = std::iter::repeat(3)
@@ -864,6 +1121,7 @@ mod tests {
 
         let wrote = fs.write(Path::new("/ignored.txt"), &buf, 0, &mut write_file_info)?;
         assert_eq!(wrote, buf.len());
+        assert_eq!(read(&mut fs, 2 * BLOCK_SIZE as usize, 0, handle)?, buf);
 
         let stat = fs.metadata(Path::new("/bar.txt"))?;
         assert_eq!(stat.st_size, buf.len() as _);
@@ -884,6 +1142,10 @@ mod tests {
             &mut write_file_info,
         )?;
         assert_eq!(wrote, BLOCK_SIZE as _);
+        assert_eq!(
+            read(&mut fs, BLOCK_SIZE as usize, 2 * BLOCK_SIZE as u64, handle)?,
+            buf
+        );
 
         let stat = fs.metadata(Path::new("/bar.txt"))?;
         assert_eq!(stat.st_size, BLOCK_SIZE as i64 * 3);
@@ -911,5 +1173,21 @@ mod tests {
         mkfs::make(&tmp_file, block_group_size as u64, BLOCK_SIZE)?;
 
         Ok(tmp_file)
+    }
+
+    fn read(
+        fs: &mut fuse_rs::Filesystem,
+        len: usize,
+        offset: u64,
+        handle: u64,
+    ) -> anyhow::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(len);
+        unsafe { buf.set_len(len) };
+        let mut file_info = fuse_rs::fs::FileInfo::default();
+        file_info.set_handle(handle);
+
+        fs.read(Path::new("/ignored.txt"), &mut buf, offset, file_info)?;
+
+        Ok(buf)
     }
 }
