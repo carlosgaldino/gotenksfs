@@ -1,4 +1,4 @@
-use super::{util, GOTENKS_MAGIC, SUPERBLOCK_SIZE};
+use super::{util, DIRECT_POINTERS, GOTENKS_MAGIC, SUPERBLOCK_SIZE};
 use anyhow::anyhow;
 use bitvec::{order::Lsb0, vec::BitVec};
 use fuse_rs::fs::FileStat;
@@ -232,7 +232,7 @@ pub struct Inode {
     pub accessed_at: Option<i64>,
     pub modified_at: Option<i64>,
     pub changed_at: Option<i64>,
-    pub direct_blocks: [u32; 12],
+    pub direct_blocks: [u32; DIRECT_POINTERS as usize],
     pub indirect_block: u32,
     pub double_indirect_block: u32,
     pub checksum: u32,

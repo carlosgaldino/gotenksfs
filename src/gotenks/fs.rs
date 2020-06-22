@@ -1,6 +1,6 @@
 use super::{
     types::{Directory, Group, Inode, Superblock},
-    util, INODE_SIZE, ROOT_INODE, SUPERBLOCK_SIZE,
+    util, DIRECT_POINTERS, INODE_SIZE, ROOT_INODE, SUPERBLOCK_SIZE,
 };
 use anyhow::anyhow;
 use fs::OpenOptions;
@@ -81,7 +81,6 @@ impl GotenksFS {
         let buf = self.mmap_mut().as_mut();
         let mut cursor = Cursor::new(buf);
         cursor.seek(SeekFrom::Start(offset))?;
-        assert_ne!(cursor.position(), 4257010);
 
         Ok(inode.serialize_into(&mut cursor)?)
     }
@@ -198,12 +197,26 @@ impl GotenksFS {
 
         let block = if index < 12 {
             inode.find_direct_block(index as usize)
-        } else if index < (pointers_per_block + 12) {
-            self.find_indirect(inode.indirect_block, index - 12, offset, 0, read)
-                .map_err(|_| Errno::EIO)?
-        } else if index < (pointers_per_block * pointers_per_block + pointers_per_block + 12) {
-            self.find_indirect(inode.double_indirect_block, index - 12, offset, 0, read)
-                .map_err(|_| Errno::EIO)?
+        } else if index < (pointers_per_block + DIRECT_POINTERS) {
+            self.find_indirect(
+                inode.indirect_block,
+                index - DIRECT_POINTERS,
+                offset,
+                0,
+                read,
+            )
+            .map_err(|_| Errno::EIO)?
+        } else if index
+            < (pointers_per_block * pointers_per_block + pointers_per_block + DIRECT_POINTERS)
+        {
+            self.find_indirect(
+                inode.double_indirect_block,
+                index - DIRECT_POINTERS,
+                offset,
+                0,
+                read,
+            )
+            .map_err(|_| Errno::EIO)?
         } else {
             unimplemented!("finding triple indirect block");
         };
@@ -221,7 +234,7 @@ impl GotenksFS {
             inode
                 .add_block(block, index as usize)
                 .map_err(|_| Errno::ENOSPC)?;
-        } else if index < (pointers_per_block + 12) {
+        } else if index < (pointers_per_block + DIRECT_POINTERS) {
             if inode.indirect_block == 0 {
                 inode.indirect_block = block;
                 self.write_data(&vec![0u8; blk_size as usize], 0, block)
@@ -229,9 +242,11 @@ impl GotenksFS {
                 block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
             }
 
-            self.save_indirect(inode.indirect_block, block, index - 12)
+            self.save_indirect(inode.indirect_block, block, index - DIRECT_POINTERS)
                 .map_err(|_| Errno::EIO)?;
-        } else if index < (pointers_per_block * pointers_per_block + pointers_per_block + 12) {
+        } else if index
+            < (pointers_per_block * pointers_per_block + pointers_per_block + DIRECT_POINTERS)
+        {
             if inode.double_indirect_block == 0 {
                 inode.double_indirect_block = block;
                 self.write_data(&vec![0u8; blk_size as usize], 0, block)
@@ -239,7 +254,7 @@ impl GotenksFS {
                 block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
             }
 
-            let indirect_offset = (index - 12) / pointers_per_block - 1;
+            let indirect_offset = (index - DIRECT_POINTERS) / pointers_per_block - 1;
             let indirect_block = match self
                 .find_indirect(inode.double_indirect_block, indirect_offset, 0, 0, read)
                 .map_err(|_| Errno::EIO)?
@@ -257,7 +272,7 @@ impl GotenksFS {
             self.save_indirect(
                 indirect_block,
                 block,
-                (index - 12) & (pointers_per_block - 1),
+                (index - DIRECT_POINTERS) & (pointers_per_block - 1),
             )
             .map_err(|_| Errno::EIO)?;
         } else {
@@ -382,7 +397,7 @@ impl GotenksFS {
     }
 
     fn allocate_data_block(&mut self) -> Option<u32> {
-        let mut groups = self
+        let groups = self
             .groups()
             .iter()
             .enumerate()
@@ -390,12 +405,12 @@ impl GotenksFS {
             .collect::<Vec<(usize, usize)>>();
 
         // TODO: handle when group has run out of space
-        groups.sort_by(|a, b| a.1.cmp(&b.1));
-        let (group_index, v) = groups
+        let (group_index, _free_blocks) = groups
             .iter()
             .filter(|g| g.1 != 0)
             .collect::<Vec<&(_, _)>>()
             .first()?;
+
         self.superblock_mut().free_blocks -= 1;
         let group = self.groups_mut().get_mut(*group_index).unwrap();
 
@@ -431,31 +446,35 @@ impl GotenksFS {
 
         cursor.read_exact(data)?;
 
-        if cursor.position() == 12608512 {}
-
         Ok(data.len())
     }
 
+    #[inline]
     fn groups(&self) -> &[Group] {
         self.groups.as_ref().unwrap()
     }
 
+    #[inline]
     fn groups_mut(&mut self) -> &mut [Group] {
         self.groups.as_mut().unwrap()
     }
 
+    #[inline]
     fn superblock(&self) -> &Superblock {
         self.sb.as_ref().unwrap()
     }
 
+    #[inline]
     fn superblock_mut(&mut self) -> &mut Superblock {
         self.sb.as_mut().unwrap()
     }
 
+    #[inline]
     fn mmap(&self) -> &MmapMut {
         self.mmap.as_ref().unwrap()
     }
 
+    #[inline]
     fn mmap_mut(&mut self) -> &mut MmapMut {
         self.mmap.as_mut().unwrap()
     }
@@ -602,7 +621,7 @@ impl fuse_rs::Filesystem for GotenksFS {
             inode.increment_size(total_wrote as u64);
         }
         self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
-        self.mmap_mut().flush().map_err(|_| Errno::EIO)?;
+        self.mmap_mut().flush_async().map_err(|_| Errno::EIO)?;
         Ok(total_wrote)
     }
 
