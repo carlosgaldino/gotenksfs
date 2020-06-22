@@ -76,6 +76,7 @@ impl GotenksFS {
         self.save_dir(dir, index)
     }
 
+    #[inline]
     fn save_inode(&mut self, mut inode: Inode, index: u32) -> anyhow::Result<()> {
         let offset = self.inode_seek_position(index);
         let buf = self.mmap_mut().as_mut();
@@ -99,6 +100,7 @@ impl GotenksFS {
         Ok(dir.serialize_into(&mut cursor)?)
     }
 
+    #[inline]
     fn find_inode(&self, index: u32) -> fuse_rs::Result<Inode> {
         let (group_index, _bitmap_index) = self.inode_offsets(index);
         if !self
@@ -189,10 +191,6 @@ impl GotenksFS {
         let blk_size = self.superblock().block_size as u64;
         let index = offset / blk_size;
 
-        if read {
-        } else if offset == 8388608 {
-        }
-
         let pointers_per_block = self.superblock().block_size as u64 / 4;
 
         let block = if index < 12 {
@@ -282,6 +280,7 @@ impl GotenksFS {
         Ok((block, blk_size as u32))
     }
 
+    #[inline]
     fn find_indirect(
         &self,
         pointer: u32,
@@ -322,6 +321,7 @@ impl GotenksFS {
         )
     }
 
+    #[inline]
     fn save_indirect(&mut self, pointer: u32, block: u32, index: u64) -> anyhow::Result<()> {
         assert_ne!(pointer, 0);
         let pointers_per_block = self.superblock().block_size as u64 / 4;
@@ -357,6 +357,7 @@ impl GotenksFS {
         seek_pos as u64
     }
 
+    #[inline]
     fn data_block_offsets(&self, index: u32) -> (u32, u32) {
         let data_blocks_per_group = self.superblock().data_blocks_per_group;
         let group_index = (index - 1) / data_blocks_per_group;
@@ -365,6 +366,7 @@ impl GotenksFS {
         (group_index, block_index)
     }
 
+    #[inline]
     fn data_block_seek_position(&self, index: u32) -> u64 {
         let (group_index, block_index) = self.data_block_offsets(index);
 
@@ -396,6 +398,7 @@ impl GotenksFS {
         Some(index as u32 + *group_index as u32 * self.superblock().data_blocks_per_group)
     }
 
+    #[inline]
     fn allocate_data_block(&mut self) -> Option<u32> {
         let groups = self
             .groups()
@@ -418,6 +421,7 @@ impl GotenksFS {
         Some(index as u32 + *group_index as u32 * self.superblock().data_blocks_per_group)
     }
 
+    #[inline]
     fn release_data_blocks(&mut self, blocks: &[u32]) {
         for block in blocks {
             let (group_index, block_index) = self.data_block_offsets(*block);
@@ -429,6 +433,7 @@ impl GotenksFS {
         }
     }
 
+    #[inline]
     fn write_data(&mut self, data: &[u8], offset: u64, block_index: u32) -> anyhow::Result<usize> {
         let block_offset = self.data_block_seek_position(block_index);
 
@@ -438,6 +443,7 @@ impl GotenksFS {
         Ok(cursor.write(data)?)
     }
 
+    #[inline]
     fn read_data(&self, data: &mut [u8], offset: u64, block_index: u32) -> anyhow::Result<usize> {
         let block_offset = self.data_block_seek_position(block_index);
         let buf = self.mmap().as_ref();
@@ -621,7 +627,6 @@ impl fuse_rs::Filesystem for GotenksFS {
             inode.increment_size(total_wrote as u64);
         }
         self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
-        self.mmap_mut().flush_async().map_err(|_| Errno::EIO)?;
         Ok(total_wrote)
     }
 
@@ -641,10 +646,8 @@ impl fuse_rs::Filesystem for GotenksFS {
         let mut offset = offset;
         let blk_size = self.superblock().block_size;
 
-        let mut iter = 0;
         let should_read = buf.len().min(inode.size as usize);
         while total_read != should_read as usize {
-            iter += 1;
             let direct_block_index = offset / blk_size as u64;
             let (block_index, space_left) = self.find_data_block(&mut inode, offset, true)?;
 

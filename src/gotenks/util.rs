@@ -1,6 +1,7 @@
 use super::INODE_SIZE;
 use std::time::{self, SystemTime};
 
+#[inline]
 pub fn calculate_checksum<S>(s: &S) -> u32
 where
     S: serde::Serialize,
@@ -10,6 +11,7 @@ where
     hasher.finalize()
 }
 
+#[inline]
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(time::UNIX_EPOCH)

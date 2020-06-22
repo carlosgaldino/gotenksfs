@@ -160,22 +160,27 @@ impl Group {
         group
     }
 
+    #[inline]
     pub fn has_inode(&self, i: usize) -> bool {
         self.inode_bitmap.get(i - 1).unwrap_or(&false) == &true
     }
 
+    #[inline]
     pub fn has_data_block(&self, i: usize) -> bool {
         self.data_bitmap.get(i - 1).unwrap_or(&false) == &true
     }
 
+    #[inline]
     pub fn free_inodes(&self) -> usize {
         self.inode_bitmap.count_zeros()
     }
 
+    #[inline]
     pub fn free_data_blocks(&self) -> usize {
         self.data_bitmap.count_zeros()
     }
 
+    #[inline]
     pub fn allocate_inode(&mut self) -> Option<usize> {
         self.next_inode.and_then(|index| {
             self.add_inode(index);
@@ -184,6 +189,7 @@ impl Group {
         })
     }
 
+    #[inline]
     pub fn allocate_data_block(&mut self) -> Option<usize> {
         self.next_data_block.and_then(|index| {
             self.add_data_block(index);
@@ -192,19 +198,23 @@ impl Group {
         })
     }
 
+    #[inline]
     pub fn release_data_block(&mut self, index: usize) {
         self.data_bitmap.set(index - 1, false);
         self.next_data_block = self.next_free_data_block();
     }
 
+    #[inline]
     fn add_inode(&mut self, i: usize) {
         self.inode_bitmap.set(i - 1, true);
     }
 
+    #[inline]
     fn add_data_block(&mut self, i: usize) {
         self.data_bitmap.set(i - 1, true);
     }
 
+    #[inline]
     fn next_free_data_block(&self) -> Option<usize> {
         self.data_bitmap
             .iter()
@@ -212,6 +222,7 @@ impl Group {
             .and_then(|p| Some(p + 1))
     }
 
+    #[inline]
     fn next_free_inode(&self) -> Option<usize> {
         self.inode_bitmap
             .iter()
