@@ -277,6 +277,8 @@ impl GotenksFS {
                         pointers_per_block,
                     )
                     .map_err(|_| Errno::EIO)?;
+                    self.write_data(&vec![0u8; blk_size as usize], 0, block)
+                        .map_err(|_| Errno::EIO)?;
                     block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
                     indirect_block
                 }
@@ -297,7 +299,6 @@ impl GotenksFS {
         Ok((block, blk_size as u32))
     }
 
-    #[inline]
     fn find_indirect(
         &self,
         pointer: u32,
@@ -331,7 +332,6 @@ impl GotenksFS {
         )
     }
 
-    #[inline]
     fn save_indirect(
         &mut self,
         pointer: u32,
@@ -413,7 +413,6 @@ impl GotenksFS {
         Some(index as u32 + *group_index as u32 * self.superblock().data_blocks_per_group)
     }
 
-    #[inline]
     fn allocate_data_block(&mut self) -> Option<u32> {
         // TODO: handle when group has run out of space
         let group_index = self
@@ -438,6 +437,36 @@ impl GotenksFS {
                 .unwrap()
                 .release_data_block(1 + block_index as usize);
         }
+        self.superblock_mut().free_blocks += blocks.len() as u32;
+    }
+
+    #[inline]
+    fn release_inode(&mut self, index: u32) {
+        let (group_index, _) = self.inode_offsets(index);
+        self.groups_mut()
+            .get_mut(group_index as usize)
+            .unwrap()
+            .release_inode(index as usize);
+        self.superblock_mut().free_inodes += 1;
+    }
+
+    fn release_indirect_block(&mut self, block: u32) -> anyhow::Result<()> {
+        let blocks = self.read_indirect_block(block)?;
+        Ok(self.release_data_blocks(&blocks))
+    }
+
+    fn release_double_indirect_block(&mut self, block: u32) -> anyhow::Result<()> {
+        let pointers_per_block = self.superblock().block_size as usize / 4;
+        let indirect_blocks = self.read_indirect_block(block)?;
+        let mut blocks = Vec::with_capacity(indirect_blocks.len() * pointers_per_block);
+        for b in indirect_blocks.iter().filter(|x| **x != 0) {
+            blocks.append(&mut self.read_indirect_block(*b)?);
+        }
+
+        self.release_data_blocks(&indirect_blocks);
+        self.release_data_blocks(&blocks);
+
+        Ok(())
     }
 
     #[inline]
@@ -467,6 +496,19 @@ impl GotenksFS {
         let mut data = [0u8; 4];
         self.read_data(&mut data, offset * 4, block_index)?;
         Ok(u32::from_le_bytes(data))
+    }
+
+    fn read_indirect_block(&mut self, block: u32) -> anyhow::Result<Vec<u32>> {
+        let pointers_per_block = self.superblock().block_size as usize / 4;
+        let mut vec = Vec::with_capacity(pointers_per_block);
+        for i in 0..pointers_per_block {
+            let b = self.read_u32(i as u64, block)?;
+            if b != 0 {
+                vec.push(b);
+            }
+        }
+
+        Ok(vec)
     }
 
     #[inline]
@@ -728,6 +770,33 @@ impl fuse_rs::Filesystem for GotenksFS {
         let (mut inode, index) = self.find_inode_from_path(path)?;
         inode.mode |= mode.bits();
         self.save_inode(inode, index).map_err(|_| Errno::EIO)
+    }
+
+    fn remove_file(&mut self, path: &Path) -> fuse_rs::Result<()> {
+        let (mut parent, parent_index) = self.find_dir(path.parent().ok_or(Errno::EINVAL)?)?;
+        match parent
+            .entries
+            .remove(path.file_name().ok_or(Errno::EINVAL)?)
+        {
+            None => return Err(Errno::ENOENT),
+            Some(index) => {
+                // TODO: handle when links > 1
+                let inode = self.find_inode(index)?;
+                self.release_data_blocks(&inode.direct_blocks());
+                if inode.indirect_block != 0 {
+                    self.release_indirect_block(inode.indirect_block)
+                        .map_err(|_| Errno::EIO)?;
+                }
+                if inode.double_indirect_block != 0 {
+                    self.release_double_indirect_block(inode.double_indirect_block)
+                        .map_err(|_| Errno::EIO)?;
+                }
+                self.save_dir(parent, parent_index)
+                    .map_err(|_| Errno::EIO)?;
+                self.release_inode(index);
+                Ok(())
+            }
+        }
     }
 
     fn init(&mut self, _connection_info: &mut fuse_rs::fs::ConnectionInfo) -> fuse_rs::Result<()> {
@@ -1193,6 +1262,84 @@ mod tests {
         assert_eq!(inode.direct_blocks[2], 4);
 
         assert_eq!(fs.superblock().free_blocks, BLOCK_SIZE * 8 - 4);
+
+        Ok(std::fs::remove_file(&tmp_file)?)
+    }
+
+    #[test]
+    fn remove_file() -> anyhow::Result<()> {
+        let tmp_file = make_fs("remove_file")?;
+        let mut fs = GotenksFS::new(&tmp_file)?;
+
+        let mut open_fi = fuse_rs::fs::OpenFileInfo::default();
+        fs.create(
+            Path::new("/bar.txt"),
+            nix::sys::stat::Mode::S_IRWXU,
+            &mut open_fi,
+        )?;
+
+        fs.open(Path::new("/bar.txt"), &mut open_fi)?;
+        let handle = open_fi.handle().unwrap();
+        let mut file_info = fuse_rs::fs::FileInfo::default();
+        file_info.set_handle(handle);
+
+        let mut write_file_info = fuse_rs::fs::WriteFileInfo::from_file_info(file_info);
+        let buf = std::iter::repeat(3)
+            .take(2 * BLOCK_SIZE as usize)
+            .collect::<Vec<u8>>();
+
+        let wrote = fs.write(Path::new("/ignored.txt"), &buf, 0, &mut write_file_info)?;
+        assert_eq!(wrote, buf.len());
+        assert_eq!(fs.superblock().free_blocks, BLOCK_SIZE * 8 - 3);
+
+        let (inode, index) = fs.find_inode_from_path(Path::new("/bar.txt"))?;
+        let blocks = vec![2u32, 3u32];
+        assert_eq!(blocks, inode.direct_blocks());
+        assert_eq!(index, 2);
+
+        fs.remove_file(Path::new("/bar.txt"))?;
+
+        assert_eq!(fs.superblock().free_blocks, BLOCK_SIZE * 8 - 1);
+        assert_eq!(
+            Errno::ENOENT,
+            fs.metadata(Path::new("/bar.txt")).unwrap_err()
+        );
+
+        let entries = fs.read_dir(Path::new("/"), 0, fuse_rs::fs::FileInfo::default())?;
+        assert_eq!(entries.len(), 0);
+
+        let mut open_fi = fuse_rs::fs::OpenFileInfo::default();
+        fs.create(
+            Path::new("/baz.txt"),
+            nix::sys::stat::Mode::S_IRWXU,
+            &mut open_fi,
+        )?;
+
+        fs.open(Path::new("/baz.txt"), &mut open_fi)?;
+        let handle = open_fi.handle().unwrap();
+        let mut file_info = fuse_rs::fs::FileInfo::default();
+        file_info.set_handle(handle);
+
+        let mut write_file_info = fuse_rs::fs::WriteFileInfo::from_file_info(file_info);
+        let buf = std::iter::repeat(3)
+            .take(2 * BLOCK_SIZE as usize)
+            .collect::<Vec<u8>>();
+
+        let wrote = fs.write(Path::new("/ignored.txt"), &buf, 0, &mut write_file_info)?;
+        assert_eq!(wrote, buf.len());
+        assert_eq!(fs.superblock().free_blocks, BLOCK_SIZE * 8 - 3);
+
+        // Check that it reuses previously freed blocks
+        let (inode, index) = fs.find_inode_from_path(Path::new("/baz.txt"))?;
+        let blocks = vec![2u32, 3u32];
+        assert_eq!(blocks, inode.direct_blocks());
+        assert_eq!(index, 2);
+
+        let entries = fs.read_dir(Path::new("/"), 0, fuse_rs::fs::FileInfo::default())?;
+        assert_eq!(entries.len(), 1);
+
+        let bar = entries.first().unwrap();
+        assert_eq!(bar.name, OsString::from("baz.txt"));
 
         Ok(std::fs::remove_file(&tmp_file)?)
     }

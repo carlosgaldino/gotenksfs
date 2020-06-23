@@ -205,6 +205,12 @@ impl Group {
     }
 
     #[inline]
+    pub fn release_inode(&mut self, index: usize) {
+        self.inode_bitmap.set(index - 1, false);
+        self.next_inode = self.next_free_inode();
+    }
+
+    #[inline]
     fn add_inode(&mut self, i: usize) {
         self.inode_bitmap.set(i - 1, true);
     }
@@ -315,15 +321,19 @@ impl Inode {
         stat
     }
 
+    #[inline]
+    pub fn direct_blocks(&self) -> Vec<u32> {
+        self.direct_blocks
+            .iter()
+            .filter_map(|x| if *x != 0 { Some(*x) } else { None })
+            .collect::<Vec<u32>>()
+    }
+
     pub fn truncate(&mut self) -> Vec<u32> {
         self.update_modified_at();
         self.size = 0;
         self.block_count = 0;
-        let blocks = self
-            .direct_blocks
-            .iter()
-            .filter_map(|x| if *x != 0 { Some(*x) } else { None })
-            .collect::<Vec<u32>>();
+        let blocks = self.direct_blocks();
         self.direct_blocks = [0u32; 12];
         blocks
     }
