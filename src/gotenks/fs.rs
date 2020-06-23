@@ -191,16 +191,16 @@ impl GotenksFS {
         let blk_size = self.superblock().block_size as u64;
         let index = offset / blk_size;
 
-        let pointers_per_block = self.superblock().block_size as u64 / 4;
+        let pointers_per_block = blk_size / mem::size_of::<u32>() as u64;
 
-        let block = if index < 12 {
+        let block = if index < DIRECT_POINTERS {
             inode.find_direct_block(index as usize)
         } else if index < (pointers_per_block + DIRECT_POINTERS) {
             self.find_indirect(
                 inode.indirect_block,
                 index - DIRECT_POINTERS,
                 offset,
-                0,
+                pointers_per_block,
                 read,
             )
             .map_err(|_| Errno::EIO)?
@@ -211,7 +211,7 @@ impl GotenksFS {
                 inode.double_indirect_block,
                 index - DIRECT_POINTERS,
                 offset,
-                0,
+                pointers_per_block,
                 read,
             )
             .map_err(|_| Errno::EIO)?
@@ -228,7 +228,7 @@ impl GotenksFS {
         }
 
         let mut block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
-        if index < 12 {
+        if index < DIRECT_POINTERS {
             inode
                 .add_block(block, index as usize)
                 .map_err(|_| Errno::ENOSPC)?;
@@ -240,8 +240,13 @@ impl GotenksFS {
                 block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
             }
 
-            self.save_indirect(inode.indirect_block, block, index - DIRECT_POINTERS)
-                .map_err(|_| Errno::EIO)?;
+            self.save_indirect(
+                inode.indirect_block,
+                block,
+                index - DIRECT_POINTERS,
+                pointers_per_block,
+            )
+            .map_err(|_| Errno::EIO)?;
         } else if index
             < (pointers_per_block * pointers_per_block + pointers_per_block + DIRECT_POINTERS)
         {
@@ -254,13 +259,24 @@ impl GotenksFS {
 
             let indirect_offset = (index - DIRECT_POINTERS) / pointers_per_block - 1;
             let indirect_block = match self
-                .find_indirect(inode.double_indirect_block, indirect_offset, 0, 0, read)
+                .find_indirect(
+                    inode.double_indirect_block,
+                    indirect_offset,
+                    0,
+                    pointers_per_block,
+                    read,
+                )
                 .map_err(|_| Errno::EIO)?
             {
                 0 => {
                     let indirect_block = block;
-                    self.save_indirect(inode.double_indirect_block, block, indirect_offset)
-                        .map_err(|_| Errno::EIO)?;
+                    self.save_indirect(
+                        inode.double_indirect_block,
+                        block,
+                        indirect_offset,
+                        pointers_per_block,
+                    )
+                    .map_err(|_| Errno::EIO)?;
                     block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
                     indirect_block
                 }
@@ -271,6 +287,7 @@ impl GotenksFS {
                 indirect_block,
                 block,
                 (index - DIRECT_POINTERS) & (pointers_per_block - 1),
+                pointers_per_block,
             )
             .map_err(|_| Errno::EIO)?;
         } else {
@@ -286,27 +303,20 @@ impl GotenksFS {
         pointer: u32,
         index: u64,
         offset: u64,
-        call: u64,
+        pointers_per_block: u64,
         read: bool,
     ) -> anyhow::Result<u32> {
         if pointer == 0 {
             return Ok(pointer);
         }
 
-        let pointers_per_block = self.superblock().block_size as u64 / 4;
-        let mut block = 0;
-
-        if index < pointers_per_block {
-            let off = index & (pointers_per_block - 1);
-            let mut data = [0u8; 4];
-            self.read_data(&mut data, off * 4, pointer)?;
-            block = u32::from_le_bytes(data);
+        let off = if index < pointers_per_block {
+            index & (pointers_per_block - 1)
         } else {
-            let off = index / pointers_per_block - 1;
-            let mut data = [0u8; 4];
-            self.read_data(&mut data, off * 4, pointer)?;
-            block = u32::from_le_bytes(data);
-        }
+            index / pointers_per_block - 1
+        };
+
+        let block = self.read_u32(off, pointer)?;
 
         if block == 0 || index < pointers_per_block {
             return Ok(block);
@@ -316,15 +326,20 @@ impl GotenksFS {
             block,
             index & (pointers_per_block - 1),
             offset,
-            call + 1,
+            pointers_per_block,
             read,
         )
     }
 
     #[inline]
-    fn save_indirect(&mut self, pointer: u32, block: u32, index: u64) -> anyhow::Result<()> {
+    fn save_indirect(
+        &mut self,
+        pointer: u32,
+        block: u32,
+        index: u64,
+        pointers_per_block: u64,
+    ) -> anyhow::Result<()> {
         assert_ne!(pointer, 0);
-        let pointers_per_block = self.superblock().block_size as u64 / 4;
         let offset = index & (pointers_per_block - 1);
 
         if index < pointers_per_block {
@@ -332,20 +347,20 @@ impl GotenksFS {
                 .map(|_| ())
         } else {
             let indirect_offset = index / pointers_per_block - 1;
-            let mut data = [0u8; 4];
-            self.read_data(&mut data, indirect_offset * 4, pointer)?;
-            let new_pointer = u32::from_le_bytes(data);
-            self.save_indirect(new_pointer, block, offset)
+            let new_pointer = self.read_u32(indirect_offset, pointer)?;
+            self.save_indirect(new_pointer, block, offset, pointers_per_block)
         }
     }
 
     // (group_block_index, bitmap_index)
+    #[inline]
     fn inode_offsets(&self, index: u32) -> (u32, u32) {
         let inodes_per_group = self.superblock().data_blocks_per_group;
         let inode_bg = (index - 1) / inodes_per_group;
         (inode_bg, (index - 1) & (inodes_per_group - 1))
     }
 
+    #[inline]
     fn inode_seek_position(&self, index: u32) -> u64 {
         let (group_index, bitmap_index) = self.inode_offsets(index);
         let block_size = self.superblock().block_size;
@@ -400,25 +415,17 @@ impl GotenksFS {
 
     #[inline]
     fn allocate_data_block(&mut self) -> Option<u32> {
-        let groups = self
+        // TODO: handle when group has run out of space
+        let group_index = self
             .groups()
             .iter()
-            .enumerate()
-            .map(|(index, g)| (index, g.free_data_blocks()))
-            .collect::<Vec<(usize, usize)>>();
-
-        // TODO: handle when group has run out of space
-        let (group_index, _free_blocks) = groups
-            .iter()
-            .filter(|g| g.1 != 0)
-            .collect::<Vec<&(_, _)>>()
-            .first()?;
+            .position(|g| g.free_data_blocks() > 0)?;
 
         self.superblock_mut().free_blocks -= 1;
-        let group = self.groups_mut().get_mut(*group_index).unwrap();
+        let group = self.groups_mut().get_mut(group_index).unwrap();
 
         let index = group.allocate_data_block()?;
-        Some(index as u32 + *group_index as u32 * self.superblock().data_blocks_per_group)
+        Some(index as u32 + group_index as u32 * self.superblock().data_blocks_per_group)
     }
 
     #[inline]
@@ -453,6 +460,13 @@ impl GotenksFS {
         cursor.read_exact(data)?;
 
         Ok(data.len())
+    }
+
+    #[inline]
+    fn read_u32(&self, offset: u64, block_index: u32) -> anyhow::Result<u32> {
+        let mut data = [0u8; 4];
+        self.read_data(&mut data, offset * 4, block_index)?;
+        Ok(u32::from_le_bytes(data))
     }
 
     #[inline]
