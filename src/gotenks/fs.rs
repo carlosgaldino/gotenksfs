@@ -96,7 +96,6 @@ impl GotenksFS {
         let mut cursor = Cursor::new(buf);
         cursor.seek(SeekFrom::Start(offset))?;
 
-        assert_ne!(cursor.position(), 4257010);
         Ok(dir.serialize_into(&mut cursor)?)
     }
 
@@ -577,7 +576,7 @@ impl fuse_rs::Filesystem for GotenksFS {
         permissions: Mode,
         file_info: &mut fuse_rs::fs::OpenFileInfo,
     ) -> fuse_rs::Result<()> {
-        let index = self.allocate_inode().ok_or_else(|| Errno::ECONNREFUSED)?;
+        let index = self.allocate_inode().ok_or_else(|| Errno::ENOSPC)?;
         let mut inode = Inode::new();
         inode.mode = permissions.bits();
         inode.user_id = self.superblock().uid;
@@ -797,6 +796,38 @@ impl fuse_rs::Filesystem for GotenksFS {
                 Ok(())
             }
         }
+    }
+
+    fn create_dir(&mut self, path: &Path, mode: Mode) -> fuse_rs::Result<()> {
+        let index = self.allocate_inode().ok_or_else(|| Errno::ENOSPC)?;
+        let (mut parent, parent_index) = self.find_dir(path.parent().ok_or(Errno::EINVAL)?)?;
+        parent.entries.insert(
+            path.file_name()
+                .map(|p| p.to_os_string())
+                .ok_or(Errno::EINVAL)?,
+            index,
+        );
+
+        let mut inode = Inode::new();
+        inode.mode = SFlag::S_IFDIR.bits() | mode.bits();
+        inode.hard_links = 2;
+        inode.user_id = self.superblock().uid;
+        inode.group_id = self.superblock().gid;
+
+        let data_block_index = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
+        let dir = Directory::default();
+
+        inode
+            .add_block(data_block_index, 0)
+            .map_err(|_| Errno::EIO)?;
+
+        self.save_inode(inode, index).map_err(|_| Errno::EIO)?;
+        self.save_dir(dir, data_block_index)
+            .map_err(|_| Errno::EIO)?;
+        self.save_dir(parent, parent_index)
+            .map_err(|_| Errno::EIO)?;
+
+        Ok(())
     }
 
     fn init(&mut self, _connection_info: &mut fuse_rs::fs::ConnectionInfo) -> fuse_rs::Result<()> {
