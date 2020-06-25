@@ -115,8 +115,7 @@ impl Group {
         assert!(!groups.is_empty());
         let blk_size = groups.first().unwrap().data_bitmap.len() / 8;
         for (i, g) in groups.iter().enumerate() {
-            let offset =
-                util::block_group_size(blk_size as u32) as u64 * i as u64 + SUPERBLOCK_SIZE;
+            let offset = util::block_group_size(blk_size as u32) * i as u64 + SUPERBLOCK_SIZE;
             w.seek(SeekFrom::Start(offset))?;
             w.write_all(g.data_bitmap.as_slice())?;
             w.write_all(g.inode_bitmap.as_slice())?;
@@ -136,7 +135,7 @@ impl Group {
         }
 
         for i in 0..count {
-            let offset = util::block_group_size(blk_size) as u64 * i as u64 + SUPERBLOCK_SIZE;
+            let offset = util::block_group_size(blk_size) * i as u64 + SUPERBLOCK_SIZE;
             r.seek(SeekFrom::Start(offset))?;
             r.read_exact(&mut buf)?;
             let data_bitmap = BitVec::<Lsb0, u8>::from_slice(&buf);

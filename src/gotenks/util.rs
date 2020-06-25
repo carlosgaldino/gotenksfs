@@ -20,11 +20,12 @@ pub fn now() -> u64 {
 }
 
 #[inline(always)]
-pub fn block_group_size(blk_size: u32) -> u32 {
-    blk_size + // data bitmap
+pub fn block_group_size(blk_size: u32) -> u64 {
+    let size = blk_size + // data bitmap
         blk_size + // inode bitmap
         inode_table_size(blk_size) +
-        data_table_size(blk_size)
+        data_table_size(blk_size);
+    size as u64
 }
 
 #[inline(always)]

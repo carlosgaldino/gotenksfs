@@ -348,10 +348,10 @@ impl GotenksFS {
 
     // (group_block_index, bitmap_index)
     #[inline]
-    fn inode_offsets(&self, index: u32) -> (u32, u32) {
-        let inodes_per_group = self.superblock().data_blocks_per_group;
-        let inode_bg = (index - 1) / inodes_per_group;
-        (inode_bg, (index - 1) & (inodes_per_group - 1))
+    fn inode_offsets(&self, index: u32) -> (u64, u64) {
+        let inodes_per_group = self.superblock().data_blocks_per_group as u64;
+        let inode_bg = (index as u64 - 1) / inodes_per_group;
+        (inode_bg, (index as u64 - 1) & (inodes_per_group - 1))
     }
 
     #[inline]
@@ -359,18 +359,18 @@ impl GotenksFS {
         let (group_index, bitmap_index) = self.inode_offsets(index);
         let block_size = self.superblock().block_size;
         let seek_pos = group_index * util::block_group_size(block_size)
-            + 2 * block_size
-            + bitmap_index * INODE_SIZE as u32
-            + SUPERBLOCK_SIZE as u32;
+            + 2 * block_size as u64
+            + bitmap_index * INODE_SIZE
+            + SUPERBLOCK_SIZE;
 
-        seek_pos as u64
+        seek_pos
     }
 
     #[inline]
-    fn data_block_offsets(&self, index: u32) -> (u32, u32) {
-        let data_blocks_per_group = self.superblock().data_blocks_per_group;
-        let group_index = (index - 1) / data_blocks_per_group;
-        let block_index = (index - 1) & (data_blocks_per_group - 1);
+    fn data_block_offsets(&self, index: u32) -> (u64, u64) {
+        let data_blocks_per_group = self.superblock().data_blocks_per_group as u64;
+        let group_index = (index as u64 - 1) / data_blocks_per_group;
+        let block_index = (index as u64 - 1) & (data_blocks_per_group - 1);
 
         (group_index, block_index)
     }
@@ -379,12 +379,12 @@ impl GotenksFS {
     fn data_block_seek_position(&self, index: u32) -> u64 {
         let (group_index, block_index) = self.data_block_offsets(index);
 
-        let block_size = self.superblock().block_size as u64;
-        let seek_pos = group_index as u64 * util::block_group_size(block_size as u32) as u64
-            + 2 * block_size
+        let block_size = self.superblock().block_size;
+        let seek_pos = group_index * util::block_group_size(block_size)
+            + 2 * block_size as u64
             + self.superblock().data_blocks_per_group as u64 * INODE_SIZE
             + SUPERBLOCK_SIZE
-            + block_size * block_index as u64;
+            + block_size as u64 * block_index;
 
         seek_pos
     }
@@ -961,7 +961,7 @@ mod tests {
         let mut fs = GotenksFS::default();
         let block_size = 1024;
         fs.sb = Some(Superblock::new(block_size, 3, 0, 0));
-        fs.superblock_mut().data_blocks_per_group = block_size * 8;
+        fs.superblock_mut().data_blocks_per_group = block_size as u32 * 8;
 
         let prefix = SUPERBLOCK_SIZE + 2 * block_size as u64 + block_size as u64 * INODE_SIZE * 8;
         let offset = fs.data_block_seek_position(1);
@@ -1379,7 +1379,7 @@ mod tests {
         }
 
         let block_group_size = util::block_group_size(BLOCK_SIZE);
-        mkfs::make(&tmp_file, block_group_size as u64, BLOCK_SIZE)?;
+        mkfs::make(&tmp_file, block_group_size, BLOCK_SIZE)?;
 
         Ok(tmp_file)
     }

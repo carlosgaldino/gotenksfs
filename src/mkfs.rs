@@ -12,7 +12,7 @@ where
     P: AsRef<Path>,
 {
     let bg_size = util::block_group_size(blk_size);
-    if file_size < (bg_size - 2 * blk_size) as u64 {
+    if file_size < (bg_size - 2 * blk_size as u64) {
         return Err(anyhow!(format!(
             "File size must be at least {} for block size of {}. Specified size: {}",
             Byte::from_bytes(bg_size as _).get_appropriate_unit(true),
@@ -32,5 +32,5 @@ where
 
     buf.flush()?;
 
-    Ok(file.set_len(SUPERBLOCK_SIZE + bg_size as u64 * groups as u64)?)
+    Ok(file.set_len(SUPERBLOCK_SIZE + bg_size * groups as u64)?)
 }
