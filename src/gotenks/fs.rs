@@ -200,7 +200,6 @@ impl GotenksFS {
                 index - DIRECT_POINTERS,
                 offset,
                 pointers_per_block,
-                read,
             )
             .map_err(|_| Errno::EIO)?
         } else if index
@@ -211,7 +210,6 @@ impl GotenksFS {
                 index - DIRECT_POINTERS,
                 offset,
                 pointers_per_block,
-                read,
             )
             .map_err(|_| Errno::EIO)?
         } else {
@@ -223,7 +221,7 @@ impl GotenksFS {
         }
 
         if read {
-            return Err(Errno::ENOSPC);
+            return Err(Errno::EINVAL);
         }
 
         let mut block = self.allocate_data_block().ok_or_else(|| Errno::ENOSPC)?;
@@ -263,7 +261,6 @@ impl GotenksFS {
                     indirect_offset,
                     0,
                     pointers_per_block,
-                    read,
                 )
                 .map_err(|_| Errno::EIO)?
             {
@@ -304,7 +301,6 @@ impl GotenksFS {
         index: u64,
         offset: u64,
         pointers_per_block: u64,
-        read: bool,
     ) -> anyhow::Result<u32> {
         if pointer == 0 {
             return Ok(pointer);
@@ -327,7 +323,6 @@ impl GotenksFS {
             index & (pointers_per_block - 1),
             offset,
             pointers_per_block,
-            read,
         )
     }
 
