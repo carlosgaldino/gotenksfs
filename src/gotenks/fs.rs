@@ -213,7 +213,7 @@ impl GotenksFS {
             )
             .map_err(|_| Errno::EIO)?
         } else {
-            unimplemented!("finding triple indirect block");
+            return Err(Errno::ENOSPC);
         };
 
         if block != 0 {
@@ -289,7 +289,7 @@ impl GotenksFS {
             )
             .map_err(|_| Errno::EIO)?;
         } else {
-            unreachable!("shouldn't need triple pointers");
+            return Err(Errno::ENOSPC);
         }
 
         Ok((block, blk_size as u32))
@@ -390,21 +390,13 @@ impl GotenksFS {
     }
 
     fn allocate_inode(&mut self) -> Option<u32> {
-        let mut groups = self
-            .groups()
-            .iter()
-            .enumerate()
-            .map(|(index, g)| (index, g.free_inodes()))
-            .collect::<Vec<(usize, usize)>>();
-
         // TODO: handle when group has run out of space
-        groups.sort_by(|a, b| a.1.cmp(&b.1));
-        let (group_index, _) = groups.first().unwrap();
+        let group_index = self.groups().iter().position(|g| g.free_inodes() > 0)?;
         self.superblock_mut().free_inodes -= 1;
-        let group = self.groups_mut().get_mut(*group_index).unwrap();
+        let group = self.groups_mut().get_mut(group_index).unwrap();
 
         let index = group.allocate_inode()?;
-        Some(index as u32 + *group_index as u32 * self.superblock().data_blocks_per_group)
+        Some(index as u32 + group_index as u32 * self.superblock().data_blocks_per_group)
     }
 
     fn allocate_data_block(&mut self) -> Option<u32> {
@@ -838,7 +830,6 @@ impl fuse_rs::Filesystem for GotenksFS {
         let buf = mmap.as_mut();
         let mut cursor = Cursor::new(buf);
 
-        assert_ne!(cursor.position(), 4257010);
         self.superblock_mut()
             .serialize_into(&mut cursor)
             .map_err(|_| Errno::EIO)?;
