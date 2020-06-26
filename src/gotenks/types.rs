@@ -221,10 +221,7 @@ impl Group {
 
     #[inline]
     fn next_free_data_block(&self) -> Option<usize> {
-        self.data_bitmap
-            .iter()
-            .position(|bit| !*bit)
-            .and_then(|p| Some(p + 1))
+        self.data_bitmap.iter().position(|bit| !*bit).map(|p| p + 1)
     }
 
     #[inline]
@@ -232,7 +229,7 @@ impl Group {
         self.inode_bitmap
             .iter()
             .position(|bit| !*bit)
-            .and_then(|p| Some(p + 1))
+            .map(|p| p + 1)
     }
 }
 

@@ -358,12 +358,10 @@ impl GotenksFS {
     fn inode_seek_position(&self, index: u32) -> u64 {
         let (group_index, bitmap_index) = self.inode_offsets(index);
         let block_size = self.superblock().block_size;
-        let seek_pos = group_index * util::block_group_size(block_size)
+        group_index * util::block_group_size(block_size)
             + 2 * block_size as u64
             + bitmap_index * INODE_SIZE
-            + SUPERBLOCK_SIZE;
-
-        seek_pos
+            + SUPERBLOCK_SIZE
     }
 
     #[inline]
@@ -380,13 +378,11 @@ impl GotenksFS {
         let (group_index, block_index) = self.data_block_offsets(index);
 
         let block_size = self.superblock().block_size;
-        let seek_pos = group_index * util::block_group_size(block_size)
+        group_index * util::block_group_size(block_size)
             + 2 * block_size as u64
             + self.superblock().data_blocks_per_group as u64 * INODE_SIZE
             + SUPERBLOCK_SIZE
-            + block_size as u64 * block_index;
-
-        seek_pos
+            + block_size as u64 * block_index
     }
 
     fn allocate_inode(&mut self) -> Option<u32> {
@@ -438,7 +434,8 @@ impl GotenksFS {
 
     fn release_indirect_block(&mut self, block: u32) -> anyhow::Result<()> {
         let blocks = self.read_indirect_block(block)?;
-        Ok(self.release_data_blocks(&blocks))
+        self.release_data_blocks(&blocks);
+        Ok(())
     }
 
     fn release_double_indirect_block(&mut self, block: u32) -> anyhow::Result<()> {
@@ -764,7 +761,7 @@ impl fuse_rs::Filesystem for GotenksFS {
             .entries
             .remove(path.file_name().ok_or(Errno::EINVAL)?)
         {
-            None => return Err(Errno::ENOENT),
+            None => Err(Errno::ENOENT),
             Some(index) => {
                 // TODO: handle when links > 1
                 let inode = self.find_inode(index)?;
@@ -974,7 +971,7 @@ mod tests {
     #[test]
     fn save_dir() -> anyhow::Result<()> {
         let tmp_file = make_fs("save_dir")?;
-        let mut fs = GotenksFS::new(&tmp_file)?;
+        let fs = GotenksFS::new(&tmp_file)?;
         let dir = fs.find_dir_from_inode(ROOT_INODE)?;
 
         assert_eq!(dir.entries.len(), 0);
@@ -985,7 +982,7 @@ mod tests {
     #[test]
     fn find_dir() -> anyhow::Result<()> {
         let tmp_file = make_fs("find_dir")?;
-        let mut fs = GotenksFS::new(&tmp_file)?;
+        let fs = GotenksFS::new(&tmp_file)?;
 
         assert_eq!(fs.find_dir("/not-a-dir").err(), Some(Errno::ENOENT));
 
@@ -1376,7 +1373,7 @@ mod tests {
     }
 
     fn read(
-        fs: &mut fuse_rs::Filesystem,
+        fs: &mut dyn fuse_rs::Filesystem,
         len: usize,
         offset: u64,
         handle: u64,
