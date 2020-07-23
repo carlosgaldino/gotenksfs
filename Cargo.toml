@@ -3,7 +3,7 @@ name        = "gotenksfs"
 version     = "0.0.0"
 authors     = ["Carlos Galdino <carloshsgaldino@gmail.com>"]
 edition     = "2018"
-description = "A filesystem on top of your filesystem"
+description = "A file system on top of your file system"
 
 [dependencies]
 clap      = "3.0.0-beta.1"

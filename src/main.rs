@@ -10,7 +10,7 @@ fn main() -> anyhow::Result<()> {
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .subcommand(
             clap::App::new("mkfs")
-                .about("Create a new filesystem")
+                .about("Create a new file system")
                 .arg("<file> 'Location of the new file system image'")
                 .arg(
                     clap::Arg::with_name("block-size")
@@ -26,11 +26,11 @@ fn main() -> anyhow::Result<()> {
                         .short('s')
                         .long("size")
                         .takes_value(true)
-                        .about("Specify the total size of the filesystem. The final size might be bigger than the provided value in order to have space for the filesystem structures.").required(true),
+                        .about("Specify the total size of the file system. The final size might be bigger than the provided value in order to have space for the file system structures.").required(true),
                 ),
         ).subcommand(
             clap::App::new("mount")
-                .about("Mount a filesystem")
+                .about("Mount a file system")
                 .arg("<image> 'Location of the file system image'")
                 .arg("<mountpoint> 'Mountpoint'")
         )

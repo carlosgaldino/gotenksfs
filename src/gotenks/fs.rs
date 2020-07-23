@@ -351,7 +351,8 @@ impl GotenksFS {
     fn inode_offsets(&self, index: u32) -> (u64, u64) {
         let inodes_per_group = self.superblock().data_blocks_per_group as u64;
         let inode_bg = (index as u64 - 1) / inodes_per_group;
-        (inode_bg, (index as u64 - 1) & (inodes_per_group - 1))
+        let bitmap_index = (index as u64 - 1) & (inodes_per_group - 1);
+        (inode_bg, bitmap_index)
     }
 
     #[inline]
