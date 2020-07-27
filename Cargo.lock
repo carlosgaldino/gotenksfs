@@ -212,7 +212,9 @@ dependencies = [
 
 [[package]]
 name = "fuse-rs"
-version = "0.0.0"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce6c83bbbebc6894f9fdf378b675ceed74b8eac5c6b6b78f8265f0670bd987be"
 dependencies = [
  "bitflags",
  "cfg-if",
